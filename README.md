@@ -29,7 +29,7 @@ Cada sessão roda o `runtime/apk-worker.js` do bundle público **sem modificaç�
 
 ## De onde vem o runtime
 
-Este repositório não contém o código do lab. `npm run fetch-runtime` baixa o build público de um **commit fixo** do repositório [`madmax-dev-br/apk-browser-lab-site`](https://github.com/madmax-dev-br/apk-browser-lab-site) (hoje a revisão `308c7a12ce00`, commit `f4c096c8`) e confere o **SHA-256 de cada arquivo** contra `runtime.lock.json` antes de instalar em `vendor/apk-lab/` (ignorado pelo git). São ~111 MiB: `runtime/`, `framework-aosp/`, `framework-resources/`, `vendor/`, `fonts/`, `licenses/`, `THIRD_PARTY.md` e os módulos de página que os serviços importam. O site não publica APKs: os serviços rodam os APKs que você envia.
+Este repositório não contém o código do lab. `npm run fetch-runtime` baixa o build público de um **commit fixo** do repositório [`madmax-dev-br/apk-browser-lab-site`](https://github.com/madmax-dev-br/apk-browser-lab-site) (hoje a revisão `5eb77725df72`, commit `6c5fe6b2`) e confere o **SHA-256 de cada arquivo** contra `runtime.lock.json` antes de instalar em `vendor/apk-lab/` (ignorado pelo git). São ~111 MiB: `runtime/`, `framework-aosp/`, `framework-resources/`, `vendor/`, `fonts/`, `licenses/`, `THIRD_PARTY.md` e os módulos de página que os serviços importam. O site não publica APKs: os serviços rodam os APKs que você envia.
 
 ```sh
 npm run fetch-runtime                      # baixa e confere
