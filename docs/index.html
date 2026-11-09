@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>APK Lab Node Service</title>
+<meta name="description" content="Rode APKs Android reais num servidor Node.js com o runtime do APK Web Lab: um serviço que carrega o APK e uma fila que organiza o uso.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#inicio">APK Lab <span>Node Service</span></a>
+  <nav aria-label="Seções">
+    <a href="#arquitetura">Arquitetura</a><a href="#inicio-rapido">Início rápido</a><a href="#api-runner">API do runner</a><a href="#api-fila">API da fila</a><a href="#receitas">Receitas</a><a href="#seguranca">Segurança</a><a href="#cors">CORS</a><a href="#english">English</a>
+  </nav>
+  <button class="theme" type="button">☾ Escuro</button>
+</header>
+<div class="layout">
+<aside class="toc" aria-label="Sumário">
+  <ol>
+    <li><a href="#inicio">Visão geral</a></li>
+    <li><a href="#arquitetura">Arquitetura</a></li>
+    <li><a href="#runtime">De onde vem o runtime</a></li>
+    <li><a href="#inicio-rapido">Início rápido</a><ol><li><a href="#variaveis">Variáveis de ambiente</a></li><li><a href="#docker">Docker Compose</a></li></ol></li>
+    <li><a href="#autenticacao">Autenticação</a></li>
+    <li><a href="#config">Configuração da sessão</a><ol><li><a href="#mock-schema">Formato do mock</a></li><li><a href="#seletores">Seletores</a></li></ol></li>
+    <li><a href="#api-runner">API do runner</a></li>
+    <li><a href="#api-fila">API da fila</a><ol><li><a href="#passos">Passos de um job</a></li></ol></li>
+    <li><a href="#receitas">Receitas</a><ol>
+      <li><a href="#r1">1. Mock de endpoint</a></li><li><a href="#r2">2. Mock por padrão, erro e atraso</a></li><li><a href="#r3">3. Redirecionar host</a></li><li><a href="#r4">4. Allow list e offline</a></li>
+      <li><a href="#r5">5. Permissões e localização</a></li><li><a href="#r6">6. Retorno de método</a></li><li><a href="#r7">7. Ignorar Activity</a></li><li><a href="#r8">8. Dispositivo ao vivo</a></li>
+      <li><a href="#r9">9. Deep link</a></li><li><a href="#r10">10. Job na fila</a></li><li><a href="#r11">11. Lease interativo</a></li><li><a href="#r12">12. Logcat e rede (SSE)</a></li>
+      <li><a href="#r13">13. Plugin no servidor</a></li><li><a href="#r14">14. Captura de um elemento</a></li><li><a href="#r15">15. CORS</a></li></ol></li>
+    <li><a href="#seguranca">Segurança</a></li>
+    <li><a href="#cors">CORS</a></li>
+    <li><a href="#limitacoes">Limitações</a></li>
+    <li><a href="#english">English summary</a></li>
+  </ol>
+</aside>
+<main>
+<section id="inicio">
+  <h1>Rode APKs Android reais num servidor Node.js</h1>
+  <p class="lead">Dois serviços HTTP em cima do runtime público do <a href="https://madmax-dev-br.github.io/apk-browser-lab-site/">APK Web Lab</a> (uma VM Dalvik em JavaScript): o <strong>runner</strong> carrega o APK de fato e expõe tudo o que o site faz — Controles, mocks, plugins, logcat, rede, capturas —, e a <strong>fila</strong> organiza o uso dos runners por vários clientes.</p>
+  <div class="badges"><span class="badge">Node 22+</span><span class="badge">sem dependências</span><span class="badge">mesmo protocolo de Worker do site</span><span class="badge">MIT</span></div>
+  <div class="card">
+    <p style="margin-top:0"><strong>O que dá para fazer pela API</strong>, com o mesmo código da VM que roda no site:</p>
+    <ul>
+      <li>criar uma sessão com o APK e a configuração já aplicada antes do app iniciar: dispositivo, rede (allow list, redirecionar hosts, offline), <strong>mocks de endpoints</strong>, permissões e localização, retornos de métodos, Activities ignoradas, tempo máximo por evento, memória, APIs ausentes, dados do app;</li>
+      <li>interagir: iniciar, abrir intent/deep link, tocar por coordenada ou por seletor (testTag, texto, chave do elemento), digitar, rolar, voltar, esperar um texto aparecer;</li>
+      <li>ler a tela: snapshot, árvore Compose, <strong>limites de layout</strong> com nomes, captura PNG da tela inteira ou de um elemento, ViewModels, fragments, inspeção de campos;</li>
+      <li>acompanhar: logcat e log de rede paginados ou por SSE, eventos da sessão, Resumo de diagnóstico;</li>
+      <li>rodar <strong>plugins</strong> no servidor com a mesma API <code>lab</code> do site (desligados por padrão);</li>
+      <li>enfileirar <strong>jobs</strong> declarativos com passos e resultados (capturas, JSON, logs) ou pedir um <strong>lease</strong> interativo de uma sessão.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="arquitetura">
+  <h2>Arquitetura</h2>
+  <svg class="diagram" viewBox="0 0 900 330" role="img" aria-label="Clientes falam com a fila; a fila distribui jobs e leases entre runners; cada runner roda uma VM por sessão em worker_threads.">
+    <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:currentColor;stroke:none"/></marker></defs>
+    <rect x="10" y="40" width="170" height="70" rx="10"/><text x="30" y="70">Clientes</text><text class="small" x="30" y="92">CI, scripts, painel web</text>
+    <rect x="10" y="200" width="170" height="70" rx="10"/><text x="30" y="230">Painel no navegador</text><text class="small" x="30" y="252">via CORS (opcional)</text>
+    <rect class="accent" x="250" y="40" width="200" height="230" rx="12"/><text x="270" y="70">Fila  (services/queue)</text>
+    <text class="small" x="270" y="98">prioridade, justiça por cliente</text><text class="small" x="270" y="118">capacidade dos runners</text><text class="small" x="270" y="138">retentativas, cancelamento</text><text class="small" x="270" y="158">jobs com passos e resultados</text><text class="small" x="270" y="178">leases + proxy da sessão</text><text class="small" x="270" y="198">SSE de progresso</text><text class="small" x="270" y="218">memória ou arquivo JSON</text>
+    <rect class="accent" x="530" y="20" width="360" height="135" rx="12"/><text x="550" y="48">Runner 1  (services/runner)</text>
+    <rect x="550" y="62" width="150" height="80" rx="8"/><text class="small" x="562" y="86">worker_threads</text><text x="562" y="108">VM sessão A</text><text class="small" x="562" y="128">apk-worker.js</text>
+    <rect x="720" y="62" width="150" height="80" rx="8"/><text class="small" x="732" y="86">worker_threads</text><text x="732" y="108">VM sessão B</text><text class="small" x="732" y="128">apk-worker.js</text>
+    <rect class="accent" x="530" y="185" width="360" height="120" rx="12"/><text x="550" y="213">Runner 2 ...</text><text class="small" x="550" y="238">CanvasKit (capturas), plugins em workers,</text><text class="small" x="550" y="258">rede direta (sem CORS) sob a política da sessão</text>
+    <line x1="180" y1="75" x2="248" y2="120" marker-end="url(#arrow)"/><line x1="180" y1="235" x2="248" y2="200" marker-end="url(#arrow)"/>
+    <line x1="450" y1="120" x2="528" y2="90" marker-end="url(#arrow)"/><line x1="450" y1="200" x2="528" y2="240" marker-end="url(#arrow)"/>
+  </svg>
+  <p>Cada sessão é um <code>worker_threads.Worker</code> que roda o <code>runtime/apk-worker.js</code> do bundle público, sem modificações, com uma camada mínima que dá a ele os globais de um Web Worker (<code>self</code>, <code>postMessage</code>, <code>fetch</code> dos próprios arquivos do bundle). O runner fala com esse Worker pelo <code>APKWorkerClient</code> do próprio bundle, então toda funcionalidade passa pelo mesmo protocolo que o site e o player usam. Capturas são compostas no servidor com o CanvasKit que vem no bundle; o modelo de "Mostrar limites de layout" e o host de plugins também são os módulos do site.</p>
+  <p>Um runner atende até <code>RUNNER_MAX_SESSIONS</code> sessões. A fila não roda APKs: ela escolhe um runner com capacidade livre (pelo <code>/health</code>), cria a sessão lá, executa os passos do job ou entrega a sessão ao cliente por um lease.</p>
+</section>
+
+<section id="runtime">
+  <h2>De onde vem o runtime</h2>
+  <p>Este repositório não contém o runtime. <code>npm run fetch-runtime</code> baixa o build publicado do site a partir de um <strong>commit fixo</strong> do repositório público <a href="https://github.com/madmax-dev-br/apk-browser-lab-site">madmax-dev-br/apk-browser-lab-site</a> e confere o SHA-256 de cada arquivo contra <code>runtime.lock.json</code> antes de instalar em <code>vendor/apk-lab/</code> (fora do git). Só entram os arquivos que os serviços usam: <code>runtime/</code>, <code>framework-aosp/</code>, <code>framework-resources/</code>, <code>vendor/</code>, <code>fonts/</code>, <code>licenses/</code>, <code>THIRD_PARTY.md</code> e os módulos de página importados. O site não publica APKs: os serviços rodam os APKs que você envia.</p>
+  <pre><code>npm run fetch-runtime                       # baixa e confere (cerca de 111 MiB)
+npm run fetch-runtime -- --verify           # só confere o que já está em vendor/apk-lab
+npm run fetch-runtime -- --from ../dist     # copia de um checkout/dist local, conferindo os hashes
+APK_LAB_RUNTIME_DIR=/caminho/do/dist npm run start:runner   # usar outro diretório</code></pre>
+  <p>Para atualizar o runtime, um mantenedor gera um novo lock a partir de um checkout do site naquele commit: <code>node scripts/make-runtime-lock.mjs &lt;checkout&gt; --commit &lt;sha&gt;</code>.</p>
+</section>
+
+<section id="inicio-rapido">
+  <h2>Início rápido</h2>
+  <pre><code>git clone https://github.com/madmax-dev-br/apk-lab-node-service.git
+cd apk-lab-node-service
+npm run fetch-runtime
+
+# terminal 1: o runner (carrega os APKs)
+RUNNER_TOKEN=troque-este-token-do-runner npm run start:runner
+
+# terminal 2: a fila (opcional; organiza o uso dos runners)
+QUEUE_CLIENTS=equipe:troque-este-token-do-cliente \
+QUEUE_RUNNERS=http://127.0.0.1:8081 QUEUE_RUNNER_TOKEN=troque-este-token-do-runner \
+npm run start:queue
+
+# uma sessão direto no runner
+curl -s -H "Authorization: Bearer troque-este-token-do-runner" \
+  -F apk=@app.apk -F 'config={"launch":true}' http://127.0.0.1:8081/sessions</code></pre>
+  <p>Os dois serviços escutam em <code>127.0.0.1</code> por padrão. Para outra interface, defina <code>RUNNER_HOST</code>/<code>QUEUE_HOST</code> (o Docker usa <code>0.0.0.0</code>).</p>
+
+  <h3 id="variaveis">Variáveis de ambiente</h3>
+  <h4>Runner</h4>
+  <table>
+    <tr><th>Variável</th><th>Padrão</th><th>Uso</th></tr>
+    <tr><td><code>RUNNER_TOKEN</code></td><td>—</td><td>Token Bearer exigido em toda a API (menos <code>/health</code>). Obrigatório, a não ser com <code>RUNNER_AUTH=off</code> (uso local de uma pessoa só).</td></tr>
+    <tr><td><code>RUNNER_HOST</code> / <code>RUNNER_PORT</code></td><td>127.0.0.1 / 8081</td><td>Endereço de escuta.</td></tr>
+    <tr><td><code>RUNNER_MAX_SESSIONS</code></td><td>2</td><td>Sessões simultâneas (cada uma é uma VM com memória própria).</td></tr>
+    <tr><td><code>RUNNER_MAX_APK_MB</code></td><td>200</td><td>Tamanho máximo do APK.</td></tr>
+    <tr><td><code>RUNNER_IDLE_TIMEOUT_S</code> / <code>RUNNER_SESSION_MAX_S</code></td><td>600 / 3600</td><td>Fecha sessões ociosas (sem chamadas nem streams abertos) e sessões antigas.</td></tr>
+    <tr><td><code>RUNNER_VM_HEAP_MB</code> / <code>RUNNER_VM_HEAP_MAX_MB</code></td><td>2048 / 6144</td><td>Limite de heap V8 do Worker de cada sessão (resourceLimits). Com <code>config.memoryMiB</code> o limite sobe para memoryMiB + 1024, até o máximo.</td></tr>
+    <tr><td><code>RUNNER_MAX_MEMORY_MIB</code></td><td>2048</td><td>Maior <code>config.memoryMiB</code> (orçamento de objetos Java da VM) aceito.</td></tr>
+    <tr><td><code>RUNNER_MIN_FREE_MB</code></td><td>0</td><td>Com valor, recusa novas sessões (503) quando a memória livre da máquina está abaixo.</td></tr>
+    <tr><td><code>RUNNER_LOAD_TIMEOUT_S</code> / <code>RUNNER_OPERATION_TIMEOUT_S</code></td><td>120 / 45</td><td>Tempo máximo de carga e de cada operação (o Worker é encerrado ao estourar).</td></tr>
+    <tr><td><code>RUNNER_ALLOWED_HOSTS</code></td><td>(vazio)</td><td>Política do operador para a rede das sessões: hosts que uma sessão pode liberar (<code>allowedHosts</code>), alvos de redirecionamento e relay. Vazio = só mocks. Ex.: <code>api.exemplo.com,*.homolog.exemplo.com,127.0.0.1</code>; <code>*</code> libera tudo.</td></tr>
+    <tr><td><code>RUNNER_ALLOW_PLUGINS</code></td><td>0</td><td><code>1</code> habilita plugins (código JavaScript enviado pelo cliente roda no servidor; veja <a href="#seguranca">Segurança</a>).</td></tr>
+    <tr><td><code>RUNNER_PLUGIN_MAX</code>, <code>RUNNER_PLUGIN_HEAP_MB</code>, <code>RUNNER_PLUGIN_BUSY_S</code>, <code>RUNNER_PLUGIN_MAX_RUN_S</code>, <code>RUNNER_PLUGIN_MAX_CODE_KB</code></td><td>4, 64, 5, 0, 256</td><td>Plugins por sessão, heap de cada plugin, segundos seguidos de CPU antes de encerrar, tempo máximo de execução (0 = sem limite), tamanho do código.</td></tr>
+    <tr><td><code>RUNNER_APP_DATA_DIR</code></td><td>(vazio)</td><td>Habilita a persistência dos dados privados do app entre sessões (<code>config.appData.keep</code>), separada por cliente (<code>X-Client-Id</code>). Vazio = cada sessão começa sem dados.</td></tr>
+    <tr><td><code>RUNNER_CORS_ORIGINS</code></td><td>(vazio)</td><td>Origens de navegador aceitas na API (veja <a href="#cors">CORS</a>).</td></tr>
+    <tr><td><code>APK_LAB_RUNTIME_DIR</code></td><td>vendor/apk-lab</td><td>Diretório do runtime.</td></tr>
+    <tr><td><code>RUNNER_LOG</code></td><td>info</td><td>debug, info, warn, error ou silent.</td></tr>
+  </table>
+  <h4>Fila</h4>
+  <table>
+    <tr><th>Variável</th><th>Padrão</th><th>Uso</th></tr>
+    <tr><td><code>QUEUE_CLIENTS</code></td><td>—</td><td>Clientes e tokens: <code>id:token[:máximo simultâneo]</code> separados por vírgula. Ex.: <code>ci:tok-ci-123456:3,equipe:tok-eq-123456</code>. Obrigatório, a não ser com <code>QUEUE_AUTH=off</code>.</td></tr>
+    <tr><td><code>QUEUE_HOST</code> / <code>QUEUE_PORT</code></td><td>127.0.0.1 / 8080</td><td>Endereço de escuta.</td></tr>
+    <tr><td><code>QUEUE_RUNNERS</code></td><td>—</td><td>URLs dos runners, separadas por vírgula; <code>url|token</code> para um token próprio.</td></tr>
+    <tr><td><code>QUEUE_RUNNER_TOKEN</code></td><td>—</td><td>Token dos runners (quando não vem na URL).</td></tr>
+    <tr><td><code>QUEUE_MAX_PER_CLIENT</code></td><td>2</td><td>Jobs/leases simultâneos por cliente (justiça).</td></tr>
+    <tr><td><code>QUEUE_MAX_QUEUED_PER_CLIENT</code></td><td>50</td><td>Itens na fila por cliente (429 acima).</td></tr>
+    <tr><td><code>QUEUE_MAX_ATTEMPTS</code></td><td>3</td><td>Tentativas de um job quando o runner falha.</td></tr>
+    <tr><td><code>QUEUE_MAX_APK_MB</code></td><td>200</td><td>Tamanho máximo do APK.</td></tr>
+    <tr><td><code>QUEUE_APK_URL_HOSTS</code></td><td>(vazio)</td><td>Hosts de onde a fila pode baixar <code>apkUrl</code> (https; http só para hosts listados). Vazio = <code>apkUrl</code> desligado.</td></tr>
+    <tr><td><code>QUEUE_JOB_TIMEOUT_S</code></td><td>900</td><td>Tempo máximo de um job.</td></tr>
+    <tr><td><code>QUEUE_LEASE_MAX_S</code> / <code>QUEUE_LEASE_IDLE_S</code></td><td>1800 / 300</td><td>Duração máxima de um lease e tempo ocioso até expirar.</td></tr>
+    <tr><td><code>QUEUE_RESULT_TTL_S</code></td><td>86400</td><td>Retenção de jobs terminados e seus arquivos.</td></tr>
+    <tr><td><code>QUEUE_DATA_DIR</code></td><td>./data/queue</td><td>APKs recebidos e artefatos dos jobs.</td></tr>
+    <tr><td><code>QUEUE_STORE</code> / <code>QUEUE_STORE_FILE</code></td><td>memory / &lt;data&gt;/queue.json</td><td><code>file</code> guarda jobs e leases num arquivo JSON (sobrevive a reinícios).</td></tr>
+    <tr><td><code>QUEUE_ALLOW_PLUGINS</code></td><td>0</td><td>Aceita passos <code>plugins</code> e <code>config.plugins</code> (o runner também precisa de <code>RUNNER_ALLOW_PLUGINS=1</code>).</td></tr>
+    <tr><td><code>QUEUE_HEALTH_INTERVAL_S</code></td><td>5</td><td>Intervalo da verificação de saúde dos runners.</td></tr>
+    <tr><td><code>QUEUE_CORS_ORIGINS</code></td><td>(vazio)</td><td>Origens de navegador aceitas na API.</td></tr>
+    <tr><td><code>QUEUE_LOG</code></td><td>info</td><td>Nível de log.</td></tr>
+  </table>
+
+  <h3 id="docker">Docker Compose</h3>
+  <pre><code># .env (não versionar)
+RUNNER_TOKEN=um-token-longo-e-aleatorio
+QUEUE_CLIENTS=equipe:outro-token-longo:2
+
+docker compose up --build
+curl -s http://127.0.0.1:8080/health</code></pre>
+  <p>A imagem baixa e confere o runtime no build. O runner fica numa rede interna do Compose; só a fila é publicada (em 127.0.0.1:8080).</p>
+</section>
+
+<section id="autenticacao">
+  <h2>Autenticação</h2>
+  <p>As duas APIs usam <code>Authorization: Bearer &lt;token&gt;</code>. No runner há um token de operador (<code>RUNNER_TOKEN</code>); na fila, um token por cliente (<code>QUEUE_CLIENTS</code>), e cada cliente só enxerga os próprios jobs e leases. Em <code>GET</code> de streams (EventSource não envia cabeçalhos) o token também é aceito como <code>?access_token=</code>. <code>GET /health</code> é público. Erros vêm sempre como <code>{"error":{"code","message","details?"},"requestId"}</code>.</p>
+  <p>No runner, o cabeçalho opcional <code>X-Client-Id</code> separa os dados persistidos dos apps (<code>RUNNER_APP_DATA_DIR</code>) por cliente.</p>
+</section>
+
+<section id="config">
+  <h2>Configuração da sessão</h2>
+  <p>O objeto <code>config</code> reúne os Controles do site. Ele vai na criação da sessão (aplicado antes de qualquer código do app rodar) e pode ser alterado ao vivo com <code>PATCH /sessions/:id/config</code> (os mesmos caminhos ao vivo do site). Chaves desconhecidas dão 400.</p>
+  <table>
+    <tr><th>Chave</th><th>Formato</th><th>Ao vivo</th></tr>
+    <tr><td><code>launch</code></td><td><code>true</code> | nome da Activity — inicia logo após carregar</td><td>—</td></tr>
+    <tr><td><code>device</code></td><td><code>{ screen, orientation: "portrait"|"landscape", connectivity: "online"|"offline"|"metered", navigation: "gesture"|"buttons", fontScale, animatorScale, statusBarHeightDp, darkTheme, hour24, locale: "pt-BR", timeZone, battery: { level, charging } }</code></td><td>sim</td></tr>
+    <tr><td><code>network</code></td><td><code>{ allowedHosts: ["host", "*.sufixo", "host:porta", "*"], hostMap: [{ from, to, enabled }], offline: bool, proxyUrl }</code> — limitado por <code>RUNNER_ALLOWED_HOSTS</code></td><td>sim</td></tr>
+    <tr><td><code>endpointMocks</code></td><td>lista de mocks (<a href="#mock-schema">formato</a>), até 50</td><td>sim</td></tr>
+    <tr><td><code>permissions</code></td><td><code>{ states: { "android.permission.X": "allow"|"deny"|"ask" }, location: { enabled, latitude, longitude, accuracy }, dialogs: "dismiss"|"manual"|"allow"|"once"|"deny" }</code></td><td>sim</td></tr>
+    <tr><td><code>methodOverrides</code></td><td><code>[{ method: "Lpkg/Classe;->m()Z" ou "pkg.Classe.m(int): boolean", value: "true", enabled }]</code></td><td>sim</td></tr>
+    <tr><td><code>ignoredActivities</code></td><td><code>[".Onboarding", { name: "pkg.Outra", enabled: true }]</code></td><td>sim</td></tr>
+    <tr><td><code>eventSeconds</code></td><td><code>0</code> (padrão), 60, 120 ou 300 — tempo máximo por evento</td><td>sim</td></tr>
+    <tr><td><code>plugins</code></td><td><code>[{ id, name, code, enabled }]</code> (exige <code>RUNNER_ALLOW_PLUGINS=1</code>)</td><td>sim</td></tr>
+    <tr><td><code>logcat</code></td><td><code>"on-demand"</code> (padrão: só com ouvinte) ou <code>"always"</code></td><td>sim</td></tr>
+    <tr><td><code>missingApis</code></td><td><code>"strict"</code> (padrão), <code>"void"</code>, <code>"primitives"</code>, <code>"all"</code> — modo tolerante, sempre reportado</td><td>no reinício</td></tr>
+    <tr><td><code>strictCrash</code></td><td>bool</td><td>no reinício</td></tr>
+    <tr><td><code>memoryMiB</code></td><td>0 (automático), 512, 1024, 2048, 3072, 4096</td><td>no reinício</td></tr>
+    <tr><td><code>appData</code></td><td><code>{ keep: true, clear: false }</code></td><td>no reinício</td></tr>
+    <tr><td><code>raster</code></td><td><code>"full"</code> (padrão no servidor) ou <code>"progressive"</code></td><td>no reinício</td></tr>
+  </table>
+  <p>As chaves "no reinício" ficam guardadas e valem no próximo <code>POST /sessions/:id/restart</code>; a resposta do PATCH as lista em <code>restartRequired</code>.</p>
+
+  <h3 id="mock-schema">Formato do mock de endpoint</h3>
+  <p>É o formato do "Mock de endpoints" do site (o mesmo JSON que o site exporta). Uma requisição do app que casa com um mock habilitado (o primeiro, na ordem da lista) é respondida pelo lab e nunca sai do dispositivo — antes da allow list, do modo offline, do redirecionamento de hosts e do relay. Cada acerto é contado, aparece no logcat (tag <code>APKWebLab</code>), no log de rede (<code>mockId</code>, <code>mockLabel</code>) e no Resumo.</p>
+  <table>
+    <tr><th>Campo</th><th>Valor</th></tr>
+    <tr><td><code>id</code></td><td>opcional, <code>[A-Za-z0-9_-]{1,40}</code> (gerado se ausente)</td></tr>
+    <tr><td><code>enabled</code></td><td>bool, padrão true</td></tr>
+    <tr><td><code>name</code></td><td>rótulo livre (até 120)</td></tr>
+    <tr><td><code>method</code></td><td><code>ANY</code> (padrão), <code>GET</code>, <code>POST</code>, <code>PUT</code>, <code>PATCH</code>, <code>DELETE</code>, <code>HEAD</code>, <code>OPTIONS</code></td></tr>
+    <tr><td><code>url</code></td><td>padrão: <code>http(s)://host[:porta]/caminho[?query]</code> ou só <code>/caminho[?query]</code> (qualquer esquema, host e porta). Um rótulo de host pode ser <code>*</code> (<code>*.exemplo.com</code>); um segmento <code>*</code> é exatamente um segmento, <code>*</code> dentro de um segmento é qualquer texto sem <code>/</code> e <code>**</code> é qualquer número de segmentos. Sem porta, qualquer porta.</td></tr>
+    <tr><td><code>query</code></td><td><code>ignore</code> (padrão: a query não é comparada) ou <code>exact</code> (exatamente os parâmetros do padrão, em qualquer ordem; valor <code>*</code> aceita qualquer valor)</td></tr>
+    <tr><td><code>bodyContains</code></td><td>texto que o corpo da requisição precisa conter</td></tr>
+    <tr><td><code>status</code></td><td>200–599 (padrão 200)</td></tr>
+    <tr><td><code>reason</code></td><td>mensagem do status (padrão: a do código)</td></tr>
+    <tr><td><code>headers</code></td><td><code>[{ "name": "Content-Type", "value": "application/json" }]</code> (até 64; <code>Content-Encoding</code> só gzip com corpo gzip real)</td></tr>
+    <tr><td><code>body</code></td><td>texto da resposta</td></tr>
+    <tr><td><code>bodyBase64</code></td><td>bytes da resposta em base64 (no lugar de <code>body</code>; até 4 MiB); <code>bodyFile</code> é só o nome exibido</td></tr>
+    <tr><td><code>delayMs</code></td><td>0–600000: atraso antes da resposta (o timeout do app vale contra ele)</td></tr>
+  </table>
+
+  <h3 id="seletores">Seletores de elemento</h3>
+  <p>Tocar, digitar, rolar, esperar e capturar aceitam <code>selector</code>, que combina (E lógico): <code>key</code> (de <code>/layout-bounds</code>, ex.: <code>c:7544:47</code> ou <code>v:6158</code>), <code>testTag</code>, <code>text</code> (igual a um texto ou ao texto editável), <code>textContains</code> (sem diferenciar maiúsculas), <code>contentDescription</code>, <code>androidId</code> (nome do id da View), <code>viewId</code>, <code>kind</code> (<code>compose</code>|<code>view</code>), <code>clickable</code> e <code>index</code> (n-ésimo resultado). Quando vários casam, os clicáveis vêm primeiro e depois os menores.</p>
+  <p>Tocar num nó Compose com a ação <code>OnClick</code> usa a ação de semântica (como a camada de acessibilidade do site); numa View clicável, o clique da View; nos demais casos, um toque real (ponteiro DOWN/UP) no centro. Coordenadas <code>x</code>/<code>y</code> são dp da tela inteira (iguais aos pixels da captura em escala 1).</p>
+</section>
+
+<section id="api-runner">
+  <h2>API do runner</h2>
+  <p>Base: <code>http://127.0.0.1:8081</code>. Respostas em JSON, exceto as capturas (<code>image/png</code>) e streams (<code>text/event-stream</code>). Operações de uma sessão rodam em ordem (até 32 na espera; 429 acima).</p>
+
+  <h3>Serviço</h3>
+  <div class="endpoint"><span class="method get">GET</span><code>/health</code><span>público</span></div>
+  <pre><code>{ "ok": true, "service": "apk-lab-runner", "version": "0.1.0", "runtimeRevision": "93d82df0437e", "pluginsAllowed": false,
+  "maxSessions": 2, "activeSessions": 1, "reserved": 0, "available": 1, "freeMemoryMb": 5120, "memoryOk": true }</code></pre>
+  <div class="endpoint"><span class="method get">GET</span><code>/stats</code></div><p>Capacidade, sessões, memória do processo e o cache de rasters.</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/plugin-templates</code></div><p>Os modelos de plugin do site (<code>{ id, name, description, code }</code>).</p>
+
+  <h3>Sessões</h3>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions</code><span>201</span></div>
+  <p>Envia o APK e a configuração; responde quando o APK está carregado (e iniciado, com <code>launch</code>). Três formas de corpo:</p>
+  <ul>
+    <li><code>multipart/form-data</code> com as partes <code>apk</code> (arquivo) e <code>config</code> (JSON);</li>
+    <li>o APK puro (<code>application/vnd.android.package-archive</code> ou <code>application/octet-stream</code>) e o config no cabeçalho <code>X-APK-Config</code> (JSON ou JSON em base64url) ou em <code>?config=</code>;</li>
+    <li><code>application/json</code> com <code>{ "apkBase64": "...", "config": {...} }</code> (APKs pequenos).</li>
+  </ul>
+  <pre><code>{ "session": { "id": "5e30ab30-...", "state": "running", "packageName": "dev.exemplo.app", "launcherActivity": "dev.exemplo.app.MainActivity",
+    "activity": "dev.exemplo.app.MainActivity", "metrics": { "loadMs": 436, "launchMs": 1162, "operations": 1 }, "appData": { "enabled": false, ... }, ... },
+  "inventory": { "packageName": "...", "usesSdk": {...}, "activities": [...], "usesPermissions": [...], ... },
+  "config": { "launch": true },
+  "snapshot": { "seq": 1, "activity": "...", "views": [...], "composeSemantics": {...}, "systemBars": {...}, ... } }</code></pre>
+  <p>Erros: 400 (corpo/config inválidos), 403 (política do operador: rede, memória, plugins), 413 (APK grande), 422 <code>vm-error</code> (a VM recusou o APK; <code>details.summary</code> traz o Resumo), 503 <code>at-capacity</code> (com <code>Retry-After</code>).</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions</code></div><p>Lista as sessões (<code>describe</code> de cada uma).</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id</code></div><p>Estado (<code>loading</code>, <code>ready</code>, <code>running</code>, <code>crashed</code>), Activity atual, métricas, dados do app, último erro.</p>
+  <div class="endpoint"><span class="method delete">DELETE</span><code>/sessions/:id</code></div><p>Encerra a VM e libera a vaga.</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/inventory</code></div><p>Fatos do manifesto: pacote, SDKs, componentes, permissões, bibliotecas nativas.</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/config</code> · <span class="method patch">PATCH</span><code>/sessions/:id/config</code></div>
+  <pre><code>PATCH /sessions/:id/config   { "device": { "orientation": "landscape" }, "endpointMocks": [ ... ] }
+→ { "applied": [ { "key": "device", "outcome": { "changed": 1, ... } }, { "key": "endpointMocks", "statuses": [ { "id": "...", "state": "active" } ] } ],
+    "restartRequired": [], "running": true, "config": { ... } }</code></pre>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/restart</code></div><p>Recarrega o mesmo APK (opcionalmente com <code>{ "config": { ...parcial } }</code>): um novo processo do app.</p>
+
+  <h3>Navegação e entrada</h3>
+  <p>Todas respondem <code>{ ..., "snapshot": &lt;resumo da tela&gt; }</code>.</p>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/launch</code></div><pre><code>{ "activity": "dev.exemplo.app.OutraActivity" }    // opcional
+→ { "launchMs": 1153, "snapshot": { ... } }</code></pre>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/intent</code></div><pre><code>{ "action": "android.intent.action.VIEW", "data": "https://links.exemplo.com/p/42", "category": ["android.intent.category.BROWSABLE"],
+  "type": null, "extras": { "origem": "api", "id": 42, "novo": true }, "component": null }
+→ { "deepLink": { "ok": true, "activity": "...", "filter": {...}, "alternatives": [], "launched": false }, "snapshot": { ... } }</code></pre>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/back</code></div>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/tap</code></div><pre><code>{ "selector": { "testTag": "entrar" } }       // ou { "key": "c:7544:77" } ou { "x": 205, "y": 380 }; "longPress": true
+→ { "via": "semantics" | "click" | "pointer", "element": { ... }, "snapshot": { ... } }</code></pre>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/type</code></div><pre><code>{ "selector": { "testTag": "email" }, "text": "maria@exemplo.com", "append": false }</code></pre>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/scroll</code></div><pre><code>{ "selector": { "testTag": "lista" }, "dx": 0, "dy": 600 }   // ou { "x": 200, "y": 500, "dy": 600 } (roda do mouse num Compose)</code></pre>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/wait</code></div><pre><code>{ "selector": { "text": "Bem-vinda" }, "timeoutMs": 10000, "gone": false }
+→ 200 { "element": { ... }, "waitedMs": 420, "activity": "..." }    |   408 { "error": { "code": "wait-timeout", ... } }</code></pre>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/input</code></div>
+  <p>Entrada crua do protocolo do Worker, com ids tirados de um snapshot: <code>{ "type": "click", "id": 6158 }</code>, <code>input</code> (<code>id</code>, <code>text</code>), <code>check</code> (<code>id</code>, <code>checked</code>), <code>focus</code>, <code>press</code>, <code>scroll</code> (<code>id</code>, <code>x</code>, <code>y</code>), <code>scrollby</code> (<code>id</code>, <code>dx</code>, <code>dy</code>), <code>compose-action</code> (<code>ownerViewId</code>, <code>nodeId</code>, <code>action</code>, <code>args</code>), <code>pointer</code> (<code>ownerViewId</code>, <code>action</code> 0 down / 1 up / 2 move / 3 cancel / 8 roda, <code>x</code>, <code>y</code>, <code>t</code>, <code>dx</code>, <code>dy</code>).</p>
+
+  <h3>Leitura da tela</h3>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/snapshot</code></div><p>Resumo: Activity, navegação, barras do sistema, árvore de Views achatada (id, tipo, texto, limites, clicável), semântica Compose, contadores de mocks/redirecionamentos/retornos. <code>?full=1</code> devolve o snapshot completo da VM (rasters trocados por ids; <code>&amp;trace=N</code> linhas do trace).</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/layout-bounds</code></div>
+  <p>As caixas de "Mostrar limites de layout" com nomes (do nome do composable quando o APK tem informação de fonte; senão semântica ou measure policy). <code>?names=0</code> pula a inspeção do Compose (mais rápido).</p>
+  <pre><code>{ "activity": "dev.exemplo.app.MainActivity", "elements": [
+  { "key": "c:7544:47", "kind": "compose", "name": "Campo de texto \"Buscar\" #search", "nameSource": "semantics", "id": 47, "ownerViewId": 7544,
+    "bounds": { "left": 16, "top": 172, "right": 395, "bottom": 236 }, "screenBounds": { ... }, "size": { "width": 379, "height": 64 },
+    "texts": ["Buscar"], "editableText": "", "role": null, "testTag": "search", "actions": ["OnClick", "SetText", ...], "clickable": true, ... } ] }</code></pre>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/elements?testTag=…&amp;text=…&amp;textContains=…</code></div><p>Busca por seletor (sem parâmetros: todos os elementos).</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/compose-tree?maxNodes=2000</code></div><p>A árvore de layout do Compose (a mesma inspeção do painel "Compose").</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/screenshot.png?scale=1&amp;systemBars=1</code></div>
+  <p>PNG da tela inteira (411×914 em escala 1 no perfil padrão). Cabeçalhos <code>X-Image-Size</code> e <code>X-Screenshot-Notes</code> (quantos rasters, textos de View aproximados).</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/elements/:key/screenshot.png?scale=1</code></div><p>PNG só das caixas de um elemento de <code>/layout-bounds</code>.</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/screen-state</code></div><p>O texto de "Copiar estado da tela".</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/diagnostic</code></div><p>Resumo de diagnóstico: estado da tela, último erro com o Resumo da VM, erros em callbacks, estimativa de APIs ausentes, saúde da VM, stubs tolerados, contadores de mocks/redirecionamentos/retornos/Activities ignoradas, dados do app, permissões.</p>
+
+  <h3>Inspeção da VM</h3>
+  <p>As consultas somente leitura dos plugins, também pela API:</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/activity</code> · <code>/view-models</code> · <code>/fragments</code></div>
+  <pre><code>GET /sessions/:id/view-models
+→ [ { "handle": "h6755.j0l26s", "className": "dev.exemplo.app.PedidosViewModel", "key": "...", "library": false, "owner": { "kind": "activity", ... } } ]</code></pre>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/inspect</code> · <span class="method post">POST</span><code>/sessions/:id/field</code></div>
+  <pre><code>POST /sessions/:id/inspect  { "handle": "h6755.j0l26s", "options": { "depth": 2, "maxFields": 200 } }
+POST /sessions/:id/field    { "handle": "h6755.j0l26s", "path": "pedidos.value.0.titulo" }
+→ valores JSON; MutableState/StateFlow/LiveData aparecem com "value". 410 "collected" quando o objeto já não existe.</code></pre>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/methods?query=isEnabled</code></div><p>Métodos do APK que casam com o texto (para montar <code>methodOverrides</code>).</p>
+
+  <h3>Logcat, rede e eventos</h3>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/logcat?since=-1&amp;limit=500&amp;level=W&amp;tag=…&amp;contains=…</code></div>
+  <pre><code>{ "lines": [ { "seq": 12, "uptime": 2310, "wall": 1762680000000, "pid": 1000, "tid": 1, "thread": "main", "level": "W", "tag": "APKWebLab", "message": "..." } ],
+  "next": 12, "more": false, "total": 13, "dropped": 0, "streaming": false }</code></pre>
+  <p>O Worker só envia linhas enquanto alguém escuta; uma leitura paginada abre o fluxo por um instante (recebe as últimas até 2000 linhas). <code>config.logcat: "always"</code> mantém a captura ligada.</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/logcat/stream</code></div><p>SSE: <code>event: log</code> por linha (o <code>id</code> do evento é o <code>seq</code>).</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/network?since=-1&amp;limit=200</code> · <code>/network/stream</code></div>
+  <p>Cada troca HTTP, consulta DNS ou conexão: <code>{ seq, method, url, host, status, outcome ("response", "refused-by-allowlist", "offline", "timeout", ...), durationMs, requestHeaders, responseHeaders, requestBytes, responseBytes, mockId, mockLabel, mappedUrl, mappedRule, refusedHost, failure }</code>. Corpos nunca são registrados. No stream: <code>event: request</code> (novas e atualizadas).</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/events</code></div><p>SSE: <code>session</code>, <code>snapshot</code>, <code>loaded</code>, <code>runtime-error</code>, <code>permission-request</code>, <code>permission-config</code>, <code>app-data</code>, <code>plugin</code>, <code>crashed</code>, <code>closed</code>.</p>
+
+  <h3>Permissões e dados do app</h3>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/permission-requests</code></div><p>Com <code>permissions.dialogs: "manual"</code>, os diálogos pendentes de <code>requestPermissions</code> e a configuração atual.</p>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/permission-requests/:rid</code></div><pre><code>{ "answer": "allow" | "once" | "deny" | "dismiss" }</code></pre>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/app-data/clear</code></div><p>Configurações &gt; Apps &gt; Limpar armazenamento.</p>
+
+  <h3>Plugins</h3>
+  <div class="endpoint"><span class="method put">PUT</span><code>/sessions/:id/plugins</code></div><pre><code>{ "plugins": [ { "id": "tela", "name": "Tela atual", "code": "lab.on('screen', s => lab.ui.kv({ Activity: s.activity }));", "enabled": true } ] }</code></pre>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/plugins</code> · <code>/plugins/:pid</code> · <code>/plugins/stream</code></div>
+  <p>Saída de cada plugin: <code>{ id, status ("rodando", "parado", "erro"), badge, blocks: [ text | kv | table | json | image ], console, errors, stats }</code>. Blocos de imagem trazem <code>path</code> (<code>GET /sessions/:id/&lt;path&gt;</code> devolve o PNG) ou, com <code>?images=inline</code>, <code>dataBase64</code>.</p>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/plugins/:pid/stop</code> · <code>/restart</code></div>
+</section>
+
+<section id="api-fila">
+  <h2>API da fila</h2>
+  <p>Base: <code>http://127.0.0.1:8080</code>. Cada cliente vê só os próprios itens.</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/health</code><span>público</span></div><div class="endpoint"><span class="method get">GET</span><code>/runners</code> · <code>/stats</code></div>
+  <div class="endpoint"><span class="method post">POST</span><code>/jobs</code><span>202</span></div>
+  <p>Corpo: <code>multipart/form-data</code> (partes <code>apk</code> e <code>job</code>), o APK puro com o job em <code>X-Job</code> (JSON ou base64url), ou JSON com <code>apkBase64</code> ou <code>apkUrl</code> (só hosts de <code>QUEUE_APK_URL_HOSTS</code>).</p>
+  <pre><code>{ "label": "fluxo de login", "priority": 5, "maxAttempts": 3, "timeoutMs": 300000,
+  "config": { ...config da sessão... },
+  "steps": [ { "type": "launch" }, { "type": "wait", "selector": { "text": "Entrar" } }, ... ],
+  "collect": { "logcat": true, "network": true } }
+→ { "id": "e070e8cb-...", "kind": "job", "state": "queued", "priority": 5, "position": 1, "attempts": 0, ... }</code></pre>
+  <p>Estados: <code>queued</code> → <code>assigned</code> → <code>running</code> → <code>succeeded</code> | <code>failed</code> | <code>cancelled</code>. Ordem: maior prioridade (0–9) primeiro; na mesma prioridade, o cliente com menos itens rodando; depois FIFO. Falhas de infraestrutura (runner fora do ar, 5xx, VM encerrada) são repetidas em outro momento/runner até <code>maxAttempts</code>; falhas de passo não.</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/jobs/:id</code></div>
+  <pre><code>{ "id": "...", "state": "succeeded", "attempts": 1, "startedAt": ..., "finishedAt": ...,
+  "result": { "session": { "packageName": "...", "loadMs": 418, "launchMs": null, "runner": "runner-1" },
+    "steps": [ { "index": 0, "type": "launch", "ok": true, "ms": 1130, "output": { "activity": "...", "launchMs": 1128 } }, ... ],
+    "artifacts": [ { "name": "tela.png", "type": "image/png", "bytes": 36459, "url": "/jobs/.../artifacts/tela.png" }, ... ] },
+  "error": null }</code></pre>
+  <div class="endpoint"><span class="method get">GET</span><code>/jobs?state=queued</code> · <code>/jobs/:id/events</code> (SSE) · <code>/jobs/:id/artifacts/:name</code></div>
+  <div class="endpoint"><span class="method delete">DELETE</span><code>/jobs/:id</code> · <span class="method post">POST</span><code>/jobs/:id/cancel</code></div>
+  <div class="endpoint"><span class="method post">POST</span><code>/leases</code><span>202</span></div>
+  <pre><code>{ "config": { "launch": true }, "priority": 5, "durationSeconds": 900, "waitSeconds": 120 }
+→ { "id": "...", "kind": "lease", "state": "queued", ... }   →   GET /leases/:id  → "state": "active", "expiresAt": ...</code></pre>
+  <div class="endpoint"><span class="method get">GET</span><code>/leases/:id</code> · <code>/leases/:id/events</code> · <span class="method post">POST</span><code>/leases/:id/extend</code> <code>{ "seconds": 300 }</code> · <span class="method delete">DELETE</span><code>/leases/:id</code></div>
+  <div class="endpoint"><span class="method get">*</span><code>/leases/:id/session/&lt;caminho&gt;</code></div>
+  <p>Proxy para a sessão do lease no runner: <code>/leases/:id/session/tap</code> = <code>/sessions/&lt;sessão&gt;/tap</code>, inclusive capturas e streams SSE. Estados: <code>queued</code>, <code>assigned</code>, <code>active</code>, <code>released</code>, <code>expired</code> (tempo máximo ou ociosidade), <code>failed</code>, <code>cancelled</code>.</p>
+
+  <h3 id="passos">Passos de um job</h3>
+  <table>
+    <tr><th>type</th><th>Campos</th><th>Resultado</th></tr>
+    <tr><td><code>launch</code></td><td><code>activity?</code></td><td>Activity, launchMs</td></tr>
+    <tr><td><code>intent</code></td><td><code>intent</code> (como em <code>/intent</code>)</td><td>deepLink</td></tr>
+    <tr><td><code>wait</code></td><td><code>selector</code>, <code>timeoutMs?</code>, <code>gone?</code></td><td>elemento</td></tr>
+    <tr><td><code>tap</code></td><td><code>selector</code> ou <code>x</code>/<code>y</code>, <code>longPress?</code></td><td>via, elemento</td></tr>
+    <tr><td><code>type</code></td><td><code>selector</code>, <code>text</code>, <code>append?</code></td><td>via</td></tr>
+    <tr><td><code>scroll</code></td><td><code>selector</code> ou <code>x</code>/<code>y</code>, <code>dx</code>, <code>dy</code></td><td>via</td></tr>
+    <tr><td><code>back</code>, <code>sleep</code></td><td>—, <code>ms</code> (até 60000)</td><td></td></tr>
+    <tr><td><code>screenshot</code></td><td><code>name?</code>, <code>scale?</code>, <code>systemBars?</code>, <code>selector?</code>/<code>key?</code> (um elemento)</td><td>artefato PNG</td></tr>
+    <tr><td><code>layoutBounds</code>, <code>snapshot</code>, <code>composeTree</code>, <code>diagnostic</code></td><td><code>names?</code>, <code>maxNodes?</code></td><td>artefato JSON</td></tr>
+    <tr><td><code>elements</code>, <code>viewModels</code>, <code>screenState</code></td><td><code>selector?</code></td><td>saída inline</td></tr>
+    <tr><td><code>viewModelField</code></td><td><code>viewModel</code> (classe ou sufixo), <code>path</code></td><td>valor do campo</td></tr>
+    <tr><td><code>inspect</code>, <code>field</code></td><td><code>handle</code>, <code>path?</code>, <code>options?</code></td><td>valor</td></tr>
+    <tr><td><code>config</code></td><td><code>config</code> parcial (ao vivo)</td><td>applied</td></tr>
+    <tr><td><code>logcat</code>, <code>network</code></td><td>filtros</td><td>artefato JSON</td></tr>
+    <tr><td><code>plugins</code></td><td><code>plugins</code>, <code>seconds</code></td><td>saída dos plugins (+ imagens)</td></tr>
+  </table>
+  <p>Todo passo aceita <code>name</code> (nomeia artefatos), <code>timeoutMs</code> e <code>continueOnError</code>. Um passo que falha encerra o job como <code>failed</code> com <code>error.step</code>.</p>
+</section>
+
+<section id="receitas">
+  <h2>Receitas</h2>
+  <p>Cada receita tem a versão com <code>curl</code> e com o cliente Node do repositório (<code>examples/apk-lab-client.mjs</code>, sem dependências). Elas são executadas nos testes de ponta a ponta do repositório contra os serviços locais. Variáveis usadas:</p>
+  <pre><code>export RUNNER=http://127.0.0.1:8081 RUNNER_TOKEN=troque-este-token-do-runner
+export QUEUE=http://127.0.0.1:8080 QUEUE_TOKEN=troque-este-token-do-cliente</code></pre>
+  <pre><code>// receitas.mjs
+import { readFile } from 'node:fs/promises';
+import { RunnerClient, QueueClient } from './apk-lab-client.mjs';
+const runner = new RunnerClient({ url: process.env.RUNNER, token: process.env.RUNNER_TOKEN });
+const queue = new QueueClient({ url: process.env.QUEUE, token: process.env.QUEUE_TOKEN });
+const apk = await readFile('app.apk');</code></pre>
+
+  <h3 id="r1">1. Sessão já criada com um endpoint mockado</h3>
+  <p><code>GET https://api.exemplo.com/v1/perfil</code> responde 200 com um JSON, sem rede. Depois de iniciar, o log de rede mostra a troca marcada com o mock.</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>cat > config.json &lt;&lt;'EOF'
+{ "launch": true,
+  "endpointMocks": [ { "name": "perfil", "method": "GET", "url": "https://api.exemplo.com/v1/perfil",
+    "status": 200, "headers": [ { "name": "Content-Type", "value": "application/json" } ],
+    "body": "{\"nome\":\"Maria\",\"plano\":\"pro\"}" } ] }
+EOF
+SESSION=$(curl -s -H "Authorization: Bearer $RUNNER_TOKEN" -F apk=@app.apk -F 'config=&lt;config.json' $RUNNER/sessions | node -pe 'JSON.parse(require("fs").readFileSync(0)).session.id')
+
+# leve o app até a tela que carrega o perfil (ex.: toque no botão), espere o texto e veja o log de rede
+curl -s -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' -d '{"selector":{"text":"Meu perfil"}}' $RUNNER/sessions/$SESSION/tap
+curl -s -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' -d '{"selector":{"textContains":"Maria"}}' $RUNNER/sessions/$SESSION/wait
+curl -s -H "Authorization: Bearer $RUNNER_TOKEN" "$RUNNER/sessions/$SESSION/network"
+# → "requests": [ { "url": "https://api.exemplo.com/v1/perfil", "outcome": "response", "status": 200, "mockId": "m-...", "mockLabel": "perfil", ... } ]</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const session = await runner.createSession(apk, {
+  launch: true,
+  endpointMocks: [{ name: 'perfil', method: 'GET', url: 'https://api.exemplo.com/v1/perfil', status: 200,
+    headers: [{ name: 'Content-Type', value: 'application/json' }], body: JSON.stringify({ nome: 'Maria', plano: 'pro' }) }],
+});
+await session.tap({ selector: { text: 'Meu perfil' } });
+await session.wait({ textContains: 'Maria' });
+const { requests } = await session.network();
+console.log(requests.map(r => `${r.method} ${r.url} → ${r.status} ${r.mockLabel ? `(mock ${r.mockLabel})` : ''}`));
+await session.close();</code></pre></div>
+  </div>
+
+  <h3 id="r2">2. Mock por padrão de caminho, com query/corpo, status e atraso</h3>
+  <p>Teste a tela de erro: qualquer <code>POST</code> em <code>/v1/pedidos/**</code> de qualquer subdomínio, com <code>?modo=rapido</code> exato e corpo contendo <code>"urgente":true</code>, responde 500 depois de 2 s.</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -s -X PATCH -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' $RUNNER/sessions/$SESSION/config -d '{
+  "endpointMocks": [ { "name": "erro lento", "method": "POST", "url": "https://*.exemplo.com/v1/pedidos/**?modo=rapido", "query": "exact",
+    "bodyContains": "\"urgente\":true", "status": 500, "reason": "Internal Server Error",
+    "headers": [ { "name": "Content-Type", "value": "application/json" } ], "body": "{\"erro\":\"indisponível\"}", "delayMs": 2000 } ] }'</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>await session.updateConfig({ endpointMocks: [{
+  name: 'erro lento', method: 'POST', url: 'https://*.exemplo.com/v1/pedidos/**?modo=rapido', query: 'exact',
+  bodyContains: '"urgente":true', status: 500, reason: 'Internal Server Error',
+  headers: [{ name: 'Content-Type', value: 'application/json' }], body: '{"erro":"indisponível"}', delayMs: 2000,
+}] });
+await session.tap({ selector: { testTag: 'enviar-pedido' } });
+await session.wait({ textContains: 'Tente novamente' }, { timeoutMs: 15000 });</code></pre></div>
+  </div>
+  <p>Um padrão sem host (<code>/v1/pedidos/*</code>) vale para qualquer esquema, host e porta.</p>
+
+  <h3 id="r3">3. Redirecionar um host para um servidor local ou de homologação</h3>
+  <p>O app continua vendo a URL original; só a troca vai para o alvo. O alvo precisa estar em <code>RUNNER_ALLOWED_HOSTS</code> (ex.: <code>RUNNER_ALLOWED_HOSTS=127.0.0.1,api.homolog.exemplo.com</code>).</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -s -H "Authorization: Bearer $RUNNER_TOKEN" -F apk=@app.apk -F 'config={"launch":true,
+  "network":{"allowedHosts":["127.0.0.1"],"hostMap":[{"from":"api.exemplo.com","to":"http://127.0.0.1:3000"},
+                                                   {"from":"*.cdn.exemplo.com","to":"https://api.homolog.exemplo.com","enabled":false}]}}' $RUNNER/sessions</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const session = await runner.createSession(apk, { launch: true, network: {
+  allowedHosts: ['127.0.0.1'],
+  hostMap: [{ from: 'api.exemplo.com', to: 'http://127.0.0.1:3000' }],
+} });
+const { requests } = await session.network();   // mappedUrl / mappedRule em cada troca redirecionada</code></pre></div>
+  </div>
+
+  <h3 id="r4">4. Allow list e modo offline</h3>
+  <p>No servidor a lista começa vazia: sem <code>allowedHosts</code>, o app só recebe respostas de mocks (o resto é recusado como <code>refused-by-allowlist</code>). Offline faz o dispositivo ficar sem rede (<code>outcome: "offline"</code>), inclusive para o <code>ConnectivityManager</code>.</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -s -X PATCH -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' \
+  -d '{"network":{"allowedHosts":["api.exemplo.com","*.cdn.exemplo.com"]}}' $RUNNER/sessions/$SESSION/config
+curl -s -X PATCH -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' \
+  -d '{"network":{"offline":true}}' $RUNNER/sessions/$SESSION/config</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>await session.updateConfig({ network: { allowedHosts: ['api.exemplo.com', '*.cdn.exemplo.com'] } });
+await session.updateConfig({ network: { offline: true } });
+const recusadas = (await session.network()).requests.filter(r => ['refused-by-allowlist', 'offline'].includes(r.outcome));</code></pre></div>
+  </div>
+
+  <h3 id="r5">5. Permissões: conceder localização com coordenadas</h3>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -s -H "Authorization: Bearer $RUNNER_TOKEN" -F apk=@app.apk -F 'config={"launch":true,"permissions":{
+  "states":{"android.permission.ACCESS_FINE_LOCATION":"allow","android.permission.CAMERA":"deny"},
+  "location":{"enabled":true,"latitude":-22.9068,"longitude":-43.1729,"accuracy":5},
+  "dialogs":"manual"}}' $RUNNER/sessions
+# diálogos pendentes e resposta
+curl -s -H "Authorization: Bearer $RUNNER_TOKEN" $RUNNER/sessions/$SESSION/permission-requests
+curl -s -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' -d '{"answer":"once"}' $RUNNER/sessions/$SESSION/permission-requests/1</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const session = await runner.createSession(apk, { launch: true, permissions: {
+  states: { 'android.permission.ACCESS_FINE_LOCATION': 'allow' },
+  location: { enabled: true, latitude: -22.9068, longitude: -43.1729, accuracy: 5 },
+  dialogs: 'allow',   // "dismiss" (padrão), "manual", "allow", "once" ou "deny"
+} });
+await session.updateConfig({ permissions: { location: { enabled: true, latitude: -23.5505, longitude: -46.6333, accuracy: 10 } } });</code></pre></div>
+  </div>
+
+  <h3 id="r6">6. Retorno de método</h3>
+  <p>Enquanto ativo, toda chamada ao método devolve o valor e o corpo não roda. Cada acerto é contado e registrado; um método que o APK não define aparece como <code>missing</code> (nada é fingido) e métodos nativos são recusados.</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -s -H "Authorization: Bearer $RUNNER_TOKEN" "$RUNNER/sessions/$SESSION/methods?query=novoCheckout"
+curl -s -X PATCH -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' \
+  -d '{"methodOverrides":[{"method":"dev.exemplo.Flags.novoCheckout(): boolean","value":"true"}]}' $RUNNER/sessions/$SESSION/config
+# → "applied":[{"key":"methodOverrides","statuses":[{"key":"Ldev/exemplo/Flags;->novoCheckout()Z","state":"active","hits":0}]}]</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const { applied } = await session.updateConfig({ methodOverrides: [
+  { method: 'Ldev/exemplo/Flags;->novoCheckout()Z', value: 'true' },
+  { method: 'dev.exemplo.Api.timeoutMs(): int', value: '30000', enabled: true },
+] });
+console.log(applied[0].statuses);</code></pre></div>
+  </div>
+
+  <h3 id="r7">7. Ignorar uma Activity</h3>
+  <p>Inícios pedidos pelo app (startActivity, startActivityForResult, PendingIntent) para a Activity são validados e descartados; a Activity atual continua.</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -s -X PATCH -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' \
+  -d '{"ignoredActivities":[".OnboardingActivity",{"name":"dev.exemplo.app.PromoActivity","enabled":true}]}' $RUNNER/sessions/$SESSION/config</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>await session.updateConfig({ ignoredActivities: ['.OnboardingActivity'] });</code></pre></div>
+  </div>
+
+  <h3 id="r8">8. Dispositivo ao vivo: orientação, idioma, tema escuro</h3>
+  <p>Aplicado como <code>ActivityThread.handleConfigurationChanged</code>: recursos, Configuration e ciclo de vida como num aparelho.</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -s -X PATCH -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' \
+  -d '{"device":{"orientation":"landscape","locale":"en-US","darkTheme":true,"fontScale":1.3}}' $RUNNER/sessions/$SESSION/config
+curl -s -H "Authorization: Bearer $RUNNER_TOKEN" -o paisagem.png $RUNNER/sessions/$SESSION/screenshot.png</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>await session.updateConfig({ device: { orientation: 'landscape', locale: 'en-US', darkTheme: true } });
+await writeFile('paisagem.png', await session.screenshot());</code></pre></div>
+  </div>
+
+  <h3 id="r9">9. Abrir um deep link</h3>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -s -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' \
+  -d '{"action":"android.intent.action.VIEW","data":"https://links.exemplo.com/p/42","extras":{"origem":"api"}}' $RUNNER/sessions/$SESSION/intent
+# → "deepLink": { "ok": true, "activity": "dev.exemplo.app.ProdutoActivity", "filter": {...}, "alternatives": [] }</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const { deepLink } = await session.intent({ action: 'android.intent.action.VIEW', data: 'meuapp://item/42' });
+if (!deepLink.ok) console.log(deepLink.error, deepLink.considered);</code></pre></div>
+  </div>
+
+  <h3 id="r10">10. Job na fila com passos e resultados</h3>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>cat > job.json &lt;&lt;'EOF'
+{ "label": "busca", "priority": 5, "collect": { "logcat": true, "network": true },
+  "config": { "endpointMocks": [ { "method": "GET", "url": "/v1/pedidos", "body": "[]" } ] },
+  "steps": [
+    { "type": "launch" },
+    { "type": "wait", "selector": { "text": "Pedidos" } },
+    { "type": "tap", "selector": { "testTag": "filtro-pendentes" } },
+    { "type": "type", "selector": { "testTag": "busca" }, "text": "Monitor" },
+    { "type": "screenshot", "name": "resultado" },
+    { "type": "layoutBounds", "name": "limites" },
+    { "type": "viewModelField", "viewModel": "PedidosViewModel", "path": "filtro.value" } ] }
+EOF
+JOB=$(curl -s -H "Authorization: Bearer $QUEUE_TOKEN" -F apk=@app.apk -F 'job=&lt;job.json' $QUEUE/jobs | node -pe 'JSON.parse(require("fs").readFileSync(0)).id')
+curl -sN -H "Authorization: Bearer $QUEUE_TOKEN" $QUEUE/jobs/$JOB/events      # progresso até "end"
+curl -s -H "Authorization: Bearer $QUEUE_TOKEN" $QUEUE/jobs/$JOB              # result.steps, result.artifacts
+curl -s -H "Authorization: Bearer $QUEUE_TOKEN" -o resultado.png $QUEUE/jobs/$JOB/artifacts/resultado.png</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const job = await queue.submitJob(apk, { label: 'busca', steps: [
+  { type: 'launch' },
+  { type: 'wait', selector: { text: 'Pedidos' } },
+  { type: 'tap', selector: { testTag: 'filtro-pendentes' } },
+  { type: 'type', selector: { testTag: 'busca' }, text: 'Monitor' },
+  { type: 'screenshot', name: 'resultado' },
+  { type: 'layoutBounds', name: 'limites' },
+] });
+const done = await queue.waitJob(job.id);
+console.log(done.state, done.result.steps.map(s => `${s.type} ${s.ok ? 'ok' : s.error.message} ${s.ms}ms`));
+await writeFile('resultado.png', await queue.artifact(done, 'resultado.png'));</code></pre></div>
+  </div>
+
+  <h3 id="r11">11. Lease interativo pela fila</h3>
+  <p>A fila reserva uma sessão num runner e repassa a API do runner para quem tem o lease, até liberar ou expirar.</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>LEASE=$(curl -s -H "Authorization: Bearer $QUEUE_TOKEN" -F apk=@app.apk -F 'job={"config":{"launch":true},"durationSeconds":900}' $QUEUE/leases | node -pe 'JSON.parse(require("fs").readFileSync(0)).id')
+curl -s -H "Authorization: Bearer $QUEUE_TOKEN" $QUEUE/leases/$LEASE            # espere "state": "active"
+curl -s -H "Authorization: Bearer $QUEUE_TOKEN" -H 'content-type: application/json' -d '{"selector":{"text":"Entrar"}}' $QUEUE/leases/$LEASE/session/tap
+curl -s -H "Authorization: Bearer $QUEUE_TOKEN" -o tela.png $QUEUE/leases/$LEASE/session/screenshot.png
+curl -s -X DELETE -H "Authorization: Bearer $QUEUE_TOKEN" $QUEUE/leases/$LEASE</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const { session, release, extend } = await queue.lease(apk, { config: { launch: true }, durationSeconds: 900 });
+await session.tap({ selector: { text: 'Entrar' } });
+await writeFile('tela.png', await session.screenshot());
+await extend(600);
+await release();</code></pre></div>
+  </div>
+
+  <h3 id="r12">12. Logcat e log de rede por SSE</h3>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -sN -H "Authorization: Bearer $RUNNER_TOKEN" $RUNNER/sessions/$SESSION/logcat/stream
+# event: log
+# id: 42
+# data: {"seq":42,"level":"W","tag":"APKWebLab","message":"endpoint mockado: GET https://api.exemplo.com/v1/perfil -> 200",...}
+curl -sN -H "Authorization: Bearer $RUNNER_TOKEN" $RUNNER/sessions/$SESSION/network/stream
+# no navegador: new EventSource(`${RUNNER}/sessions/${id}/logcat/stream?access_token=${token}`)</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const logs = session.streamLogcat(line => console.log(line.level, line.tag, line.message));
+const net = session.streamNetwork(r => console.log(r.method, r.url, r.outcome, r.status ?? ''));
+// ... interaja ...
+logs.stop(); net.stop();</code></pre></div>
+  </div>
+
+  <h3 id="r13">13. Plugin no servidor observando um campo de ViewModel</h3>
+  <p>Requer <code>RUNNER_ALLOW_PLUGINS=1</code> no runner (e <code>QUEUE_ALLOW_PLUGINS=1</code> para passar pela fila). O código é o mesmo de um plugin do site.</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>cat > plugins.json &lt;&lt;'EOF'
+{ "plugins": [ { "id": "orcamento", "name": "Orçamento", "code": "const [vm] = (await lab.viewModels()).filter(m => !m.library);\nlab.ui.text(vm.className, { id: 'classe' });\nlab.watch(vm.handle, 'budget.value', (valor, anterior) => lab.ui.kv({ valor, anterior: anterior ?? '—' }, { id: 'budget' }), { intervalMs: 500 });" } ] }
+EOF
+curl -s -X PUT -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' -d @plugins.json $RUNNER/sessions/$SESSION/plugins
+curl -s -H "Authorization: Bearer $RUNNER_TOKEN" $RUNNER/sessions/$SESSION/plugins/orcamento
+curl -sN -H "Authorization: Bearer $RUNNER_TOKEN" $RUNNER/sessions/$SESSION/plugins/stream</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>await session.setPlugins([{ id: 'orcamento', name: 'Orçamento', code: `
+  const [vm] = (await lab.viewModels()).filter(m => !m.library);
+  lab.ui.text(vm.className, { id: 'classe' });
+  lab.watch(vm.handle, 'budget.value', (valor, anterior) => lab.ui.kv({ valor, anterior: anterior ?? '—' }, { id: 'budget' }), { intervalMs: 500 });
+  lab.ui.image(await lab.screenshot({ maxWidth: 360 }), { id: 'tela', caption: 'tela atual' });` }]);
+const stop = session.streamPlugins(out => console.log(out.id, out.status, out.blocks));</code></pre></div>
+  </div>
+
+  <h3 id="r14">14. Captura de um elemento pela chave de layout-bounds</h3>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -s -H "Authorization: Bearer $RUNNER_TOKEN" "$RUNNER/sessions/$SESSION/elements?testTag=novo-pedido"
+# → { "elements": [ { "key": "c:7544:77", "name": "Button \"Novo pedido\" #novo-pedido", ... } ] }
+curl -s -H "Authorization: Bearer $RUNNER_TOKEN" -o botao.png "$RUNNER/sessions/$SESSION/elements/c%3A7544%3A77/screenshot.png?scale=2"</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const { elements } = await session.layoutBounds();
+const botao = elements.find(e => e.testTag === 'novo-pedido');
+await writeFile('botao.png', await session.elementScreenshot(botao.key, { scale: 2 }));</code></pre></div>
+  </div>
+
+  <h3 id="r15">15. CORS: um painel no navegador falando com a API</h3>
+  <p>Veja a seção <a href="#cors">CORS</a>. Em resumo: inicie o serviço com as origens do painel e use <code>fetch</code> com o token.</p>
+  <pre><code>RUNNER_CORS_ORIGINS=https://painel.exemplo.com,http://localhost:5173 npm run start:runner
+QUEUE_CORS_ORIGINS=https://painel.exemplo.com npm run start:queue</code></pre>
+  <pre><code>// no painel (https://painel.exemplo.com)
+const form = new FormData(); form.append('apk', arquivo); form.append('config', JSON.stringify({ launch: true }));
+const { session } = await (await fetch('https://runner.exemplo.com/sessions', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form })).json();
+const png = await (await fetch(`https://runner.exemplo.com/sessions/${session.id}/screenshot.png`, { headers: { Authorization: `Bearer ${token}` } })).blob();
+const logs = new EventSource(`https://runner.exemplo.com/sessions/${session.id}/logcat/stream?access_token=${token}`);</code></pre>
+</section>
+
+<section id="seguranca">
+  <h2>Segurança</h2>
+  <ul>
+    <li><strong>Tokens</strong>: toda a API exige Bearer (comparação em tempo constante). Gere tokens longos e aleatórios, use HTTPS na frente (proxy reverso) e não exponha o runner diretamente — deixe só a fila acessível aos clientes.</li>
+    <li><strong>O APK roda no servidor.</strong> A VM interpreta o bytecode em JavaScript dentro de um Worker com limite de memória; não há execução de código nativo ARM (bibliotecas nativas que o lab não traz falham explicitamente). Mesmo assim, trate APKs de terceiros como entrada não confiável: rode o runner num contêiner/VM isolado, sem credenciais e sem acesso à rede interna.</li>
+    <li><strong>Rede do app</strong>: por padrão, nada sai (allow list vazia; só mocks). O operador decide o que uma sessão pode liberar com <code>RUNNER_ALLOWED_HOSTS</code>, que também limita alvos de redirecionamento e relay. Cuidado ao liberar IPs internos ou <code>*</code>: o app poderia alcançar serviços da sua rede (SSRF).</li>
+    <li><strong>Plugins executam JavaScript enviado pelo cliente no servidor.</strong> Ficam desligados (<code>RUNNER_ALLOW_PLUGINS=1</code> para ligar). Cada plugin roda num <code>worker_threads</code> com heap limitado, ambiente vazio (sem as variáveis do runner), num contexto <code>node:vm</code> sem <code>process</code>, <code>require</code>, <code>import()</code> nem <code>fetch</code>, com as mensagens entrando como JSON (sem objetos do lado de fora) e um vigia de CPU que o encerra após <code>RUNNER_PLUGIN_BUSY_S</code> segundos seguidos ocupado. <strong>Isso não é uma fronteira de segurança</strong>: <code>node:vm</code> e worker_threads podem ter fugas. Só habilite plugins para usuários de confiança, num runner isolado.</li>
+    <li><strong>Limites</strong>: tamanho de APK e de corpo, número de sessões, operações na espera, tempos de carga/operação/job/lease, número de plugins, mocks e regras; entradas validadas com mensagens de erro claras.</li>
+    <li><strong>Dados</strong>: APKs e artefatos ficam em <code>QUEUE_DATA_DIR</code> até a retenção; dados dos apps (opcional) em <code>RUNNER_APP_DATA_DIR</code>, separados por <code>X-Client-Id</code>. Os logs de rede guardam cabeçalhos como o app os enviou (inclusive tokens do app), só em memória.</li>
+  </ul>
+</section>
+
+<section id="cors">
+  <h2>CORS</h2>
+  <h3>No navegador (o site)</h3>
+  <p>No site, as requisições HTTP do app viram <code>fetch</code> da página. O navegador aplica CORS: o servidor de destino precisa responder com <code>Access-Control-Allow-Origin</code> para a origem do site (e, para <code>localhost</code> a partir de uma página https, liberar o Private Network Access com <code>Access-Control-Allow-Private-Network: true</code>). Quando a API não tem CORS, o site oferece um relay (<code>proxyUrl</code>), mocks ou redirecionamento para um servidor seu.</p>
+  <h3>No servidor (este repositório)</h3>
+  <p>No runner <strong>não existe CORS para a VM</strong>: o worker de rede do bundle faz a requisição direto do Node, sujeita apenas à política da sessão (mocks, allow list, redirecionamento, offline) e à política do operador (<code>RUNNER_ALLOWED_HOSTS</code>). É um dos motivos para rodar no servidor: apps que falam com APIs sem CORS funcionam sem relay.</p>
+  <h3>Na API do runner e da fila</h3>
+  <p>Quando um front-end no navegador chama a <em>própria</em> API do runner ou da fila, quem responde CORS são esses serviços. Por padrão nenhuma origem é aceita. Configure as origens exatas:</p>
+  <pre><code>RUNNER_CORS_ORIGINS=https://painel.exemplo.com,http://localhost:5173
+QUEUE_CORS_ORIGINS=https://painel.exemplo.com</code></pre>
+  <ul>
+    <li>Preflights <code>OPTIONS</code> de origens listadas recebem 204 com <code>Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS</code>, <code>Access-Control-Allow-Headers: authorization, content-type, x-apk-config, x-client-id, last-event-id</code>, <code>Access-Control-Max-Age: 600</code> e, quando pedido, <code>Access-Control-Allow-Private-Network: true</code>. Origens não listadas recebem 403.</li>
+    <li>Respostas levam <code>Access-Control-Allow-Origin: &lt;origem&gt;</code>, <code>Vary: Origin</code> e expõem <code>X-Request-Id</code>, <code>Retry-After</code>, <code>Content-Disposition</code>.</li>
+    <li><code>*</code> aceita qualquer origem (não recomendado: o token Bearer passa a valer em qualquer página que o tenha).</li>
+    <li><code>EventSource</code> não envia cabeçalhos: use <code>?access_token=</code> nos streams (só GET).</li>
+  </ul>
+  <pre><code>curl -i -X OPTIONS http://127.0.0.1:8081/sessions -H 'Origin: https://painel.exemplo.com' \
+  -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: authorization, content-type'
+# HTTP/1.1 204 No Content
+# access-control-allow-origin: https://painel.exemplo.com
+# access-control-allow-methods: GET, POST, PUT, PATCH, DELETE, OPTIONS</code></pre>
+</section>
+
+<section id="limitacoes">
+  <h2>Limitações</h2>
+  <p>As mesmas do APK Web Lab:</p>
+  <ul>
+    <li>APIs Android/JDK ainda não implementadas falham com um erro explícito que nomeia a API (o modo tolerante <code>missingApis</code> as substitui por stubs, sempre reportados no diagnóstico).</li>
+    <li>Código nativo protegido (integridade, detecção de root/emulador, criptografia própria, antifraude, pagamentos, attestation) não é simulado nem contornado: roda como está ou falha.</li>
+    <li>WebView: no servidor não há iframes; uma WebView falha explicitamente.</li>
+    <li>Desempenho: a VM interpreta bytecode; apps grandes iniciam em segundos a dezenas de segundos e usam centenas de MiB por sessão.</li>
+    <li>Capturas: rasters da VM (Compose, Canvas, fundos, sombras, parágrafos Skia) são exatos; o texto que o site desenha com o DOM (TextView/Button simples) é desenhado aqui com Roboto, como aproximação (<code>X-Screenshot-Notes.approximatedText</code>). Drawables vetoriais em SVG não são desenhados (contados em <code>vectorDrawablesSkipped</code>).</li>
+    <li>Sem áudio no servidor; as amostras de <code>AudioTrack</code> são descartadas.</li>
+  </ul>
+</section>
+
+<section id="english">
+  <h2>English summary</h2>
+  <p><strong>APK Lab Node Service</strong> runs real Android APKs on a Node.js server with the public <a href="https://madmax-dev-br.github.io/apk-browser-lab-site/">APK Web Lab</a> runtime (a Dalvik VM in JavaScript). The <strong>runner</strong> loads APKs into VM sessions (one <code>worker_threads</code> Worker each, running the bundle's unmodified <code>apk-worker.js</code> through its own <code>APKWorkerClient</code>) and exposes every feature of the site over REST + SSE: session config applied before the app starts (device, network allow list / host map / offline, endpoint mocks, permissions and location, method return overrides, ignored Activities, time and memory limits, app data), input (launch, intents, tap by coordinates or selector, type, scroll, back, wait for an element), screen reading (snapshot, Compose tree, layout bounds with names, server-side PNG screenshots of the screen or one element via CanvasKit), VM inspection (ViewModels, fragments, fields), logcat and network log (paged or streamed), diagnostics, and server-side plugins with the site's <code>lab</code> API (disabled by default). The <strong>queue</strong> schedules jobs (declarative steps with outputs and artifacts) and interactive leases (a proxied runner session) across runners with priorities, per-client fairness, capacity from health checks, retries, cancellation, SSE progress and retention; storage is in memory or a JSON file and can be swapped for a database.</p>
+  <p>Quick start: <code>npm run fetch-runtime</code> (downloads the pinned public build and checks every SHA-256), <code>RUNNER_TOKEN=… npm run start:runner</code>, <code>QUEUE_CLIENTS=id:token QUEUE_RUNNERS=http://127.0.0.1:8081 QUEUE_RUNNER_TOKEN=… npm run start:queue</code>, or <code>docker compose up --build</code>. Security: Bearer tokens everywhere, the app's network is closed unless the operator allows hosts (<code>RUNNER_ALLOWED_HOSTS</code>), plugins run user JavaScript on the server and must only be enabled for trusted users (worker_threads + node:vm are not a security boundary). CORS: the VM has no CORS on the server (requests go straight out under the session's policy); the services' own APIs answer CORS only for origins listed in <code>RUNNER_CORS_ORIGINS</code> / <code>QUEUE_CORS_ORIGINS</code>. Code: MIT; the downloaded runtime keeps its own licenses (see its <code>THIRD_PARTY.md</code>).</p>
+</section>
+<footer>APK Lab Node Service · código MIT · o runtime baixado mantém as próprias licenças · <a href="https://github.com/madmax-dev-br/apk-lab-node-service">GitHub</a></footer>
+</main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

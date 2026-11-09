@@ -1,0 +1,10 @@
+node_modules/
+vendor/
+data/
+*.apk
+*.aab
+*.dex
+*.so
+*.log
+.env
+.DS_Store

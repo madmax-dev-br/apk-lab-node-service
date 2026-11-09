@@ -1,0 +1,25 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Repository checks (privacy, no binaries)
+        run: node scripts/check-repo.mjs
+      - name: Syntax
+        run: for f in $(git ls-files '*.mjs'); do node --check "$f"; done
+      # No network in the tests: without a runtime (vendor/apk-lab or APK_LAB_RUNTIME_DIR) and test APKs (APK_LAB_TEST_APK_DIR)
+      # the runtime-dependent and end-to-end tests report as skipped.
+      - name: Tests
+        run: npm test

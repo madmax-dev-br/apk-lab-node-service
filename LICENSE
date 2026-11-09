@@ -1,0 +1,45 @@
+MIT License
+
+Copyright (c) 2026 APK Web Lab Node Service contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---------------------------------------------------------------------------
+
+Scope of this license
+
+The MIT license above covers the code in this repository only (services/,
+lib/, scripts/, examples/, test/, docs/).
+
+The APK Web Lab runtime is NOT part of this repository. `npm run
+fetch-runtime` downloads it, pinned by runtime.lock.json, from the public site
+repository (https://github.com/madmax-dev-br/apk-browser-lab-site) into
+vendor/apk-lab/. The downloaded files keep their own terms:
+
+  * third-party components (AOSP framework and libcore, ICU, SQLite, zlib,
+    tzdata, Skia/CanvasKit, Roboto and other fonts, Kotlin, Compose, ...) are
+    under the licenses listed in vendor/apk-lab/THIRD_PARTY.md and in the
+    LICENSE / NOTICE files next to each component (for example
+    vendor/apk-lab/framework-aosp/, vendor/apk-lab/vendor/*/,
+    vendor/apk-lab/licenses/);
+  * the APK Web Lab runtime code itself is published by its author on that
+    public site; use it under the terms its author publishes there.
+
+The APKs you run with these services are yours or third parties'; their own
+licenses and terms apply.

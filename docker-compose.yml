@@ -1,0 +1,39 @@
+# docker compose up --build
+# Set the tokens in a .env file next to this file (never commit it):
+#   RUNNER_TOKEN=<long random value>
+#   QUEUE_CLIENTS=equipe:<long random value>:2
+services:
+  runner:
+    build: .
+    environment:
+      SERVICE: runner
+      RUNNER_TOKEN: ${RUNNER_TOKEN:?set RUNNER_TOKEN in .env}
+      RUNNER_MAX_SESSIONS: ${RUNNER_MAX_SESSIONS:-2}
+      RUNNER_ALLOWED_HOSTS: ${RUNNER_ALLOWED_HOSTS:-}
+      RUNNER_ALLOW_PLUGINS: ${RUNNER_ALLOW_PLUGINS:-0}
+      RUNNER_APP_DATA_DIR: /data/app-data
+      RUNNER_CORS_ORIGINS: ${RUNNER_CORS_ORIGINS:-}
+    volumes:
+      - runner-data:/data
+    mem_limit: 8g
+    # Not published: only the queue talks to the runner. Uncomment to call it directly.
+    # ports: ["127.0.0.1:8081:8081"]
+  queue:
+    build: .
+    environment:
+      SERVICE: queue
+      QUEUE_CLIENTS: ${QUEUE_CLIENTS:?set QUEUE_CLIENTS in .env}
+      QUEUE_RUNNERS: http://runner:8081
+      QUEUE_RUNNER_TOKEN: ${RUNNER_TOKEN}
+      QUEUE_STORE: file
+      QUEUE_ALLOW_PLUGINS: ${RUNNER_ALLOW_PLUGINS:-0}
+      QUEUE_CORS_ORIGINS: ${QUEUE_CORS_ORIGINS:-}
+    volumes:
+      - queue-data:/data
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      - runner
+volumes:
+  runner-data:
+  queue-data:
