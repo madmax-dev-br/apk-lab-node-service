@@ -29,7 +29,7 @@ Cada sessão roda o `runtime/apk-worker.js` do bundle público **sem modificaç�
 
 ## De onde vem o runtime
 
-Este repositório não contém o código do lab. `npm run fetch-runtime` baixa o build público de um **commit fixo** do repositório [`madmax-dev-br/apk-browser-lab-site`](https://github.com/madmax-dev-br/apk-browser-lab-site) (hoje a revisão `93d82df0437e`, commit `624ab3cb`) e confere o **SHA-256 de cada arquivo** contra `runtime.lock.json` antes de instalar em `vendor/apk-lab/` (ignorado pelo git). São ~111 MiB: `runtime/`, `framework-aosp/`, `framework-resources/`, `vendor/`, `fonts/`, `licenses/`, `THIRD_PARTY.md` e os módulos de página que os serviços importam. O site não publica APKs: os serviços rodam os APKs que você envia.
+Este repositório não contém o código do lab. `npm run fetch-runtime` baixa o build público de um **commit fixo** do repositório [`madmax-dev-br/apk-browser-lab-site`](https://github.com/madmax-dev-br/apk-browser-lab-site) (hoje a revisão `c6940189447d`, commit `771a9a38`) e confere o **SHA-256 de cada arquivo** contra `runtime.lock.json` antes de instalar em `vendor/apk-lab/` (ignorado pelo git). São ~111 MiB: `runtime/`, `framework-aosp/`, `framework-resources/`, `vendor/`, `fonts/`, `licenses/`, `THIRD_PARTY.md` e os módulos de página que os serviços importam. O site não publica APKs: os serviços rodam os APKs que você envia.
 
 ```sh
 npm run fetch-runtime                      # baixa e confere
@@ -98,15 +98,17 @@ Referência completa com exemplos de requisição e resposta: **[documentação]
 
 | | |
 |---|---|
-| `GET /health`, `GET /stats`, `GET /plugin-templates` | capacidade, revisão do runtime, modelos de plugin |
+| `GET /health`, `GET /stats`, `GET /plugin-templates` | capacidade, revisão do runtime, modelos de plugin (os do site e "Print na tela pronta") |
 | `POST /sessions` | APK (multipart `apk`+`config`, binário + `X-APK-Config`, ou JSON `apkBase64`) → sessão carregada |
 | `GET /sessions`, `GET\|DELETE /sessions/:id`, `GET /sessions/:id/inventory` | |
 | `GET\|PATCH /sessions/:id/config`, `POST /sessions/:id/restart` | Controles ao vivo; chaves de reinício |
-| `POST /sessions/:id/launch\|intent\|back\|tap\|type\|scroll\|wait\|input` | navegação e entrada (seletores ou coordenadas) |
+| `POST /sessions/:id/launch\|intent\|back\|tap\|type\|scroll\|wait\|input` | navegação e entrada (seletores ou coordenadas); `wait` aceita `{ "ready": true }` sozinho ou com um seletor |
+| `POST /sessions/:id/reload` | `{ "mode": "recreate" }` (padrão: `Activity.recreate()`, estado salvo e ViewModels retidos mantidos) ou `{ "mode": "reopen" }` (instância nova com o mesmo Intent, conteúdo carrega de novo) |
+| `GET /sessions/:id/ready` | "Tela pronta": o `screenReady` do último snapshot (`ready`, `waitingFor`, `fragments`) e se ele é atual (`current`) |
 | `GET /sessions/:id/snapshot\|layout-bounds\|elements\|compose-tree\|screen-state\|diagnostic` | leitura da tela e Resumo |
-| `GET /sessions/:id/screenshot.png`, `GET /sessions/:id/elements/:key/screenshot.png` | PNG da tela / de um elemento |
+| `GET /sessions/:id/screenshot.png`, `GET /sessions/:id/elements/:key/screenshot.png` | PNG da tela / de um elemento; `?waitReady=1&readyTimeoutMs=15000` espera a tela pronta antes (408 com os motivos) |
 | `GET /sessions/:id/activity\|view-models\|fragments\|methods`, `POST /sessions/:id/inspect\|field` | inspeção da VM |
-| `GET /sessions/:id/logcat\|network` (+ `/stream`), `GET /sessions/:id/events` | logs paginados e SSE |
+| `GET /sessions/:id/logcat\|network` (+ `/stream`), `GET /sessions/:id/events` | logs paginados e SSE; `/events` tem o evento `ready` a cada virada da tela pronta |
 | `GET /sessions/:id/permission-requests`, `POST .../permission-requests/:rid`, `POST /sessions/:id/app-data/clear` | |
 | `GET\|PUT /sessions/:id/plugins`, `GET /sessions/:id/plugins/stream\|:pid`, `POST .../plugins/:pid/stop\|restart` | plugins |
 
@@ -118,17 +120,21 @@ Referência completa com exemplos de requisição e resposta: **[documentação]
 | `POST /jobs`, `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/events`, `GET /jobs/:id/artifacts/:name`, `DELETE /jobs/:id` | jobs com passos |
 | `POST /leases`, `GET /leases/:id`, `POST /leases/:id/extend`, `DELETE /leases/:id`, `* /leases/:id/session/<caminho>` | sessão interativa via proxy |
 
-Passos de um job: `launch`, `intent`, `wait`, `tap`, `type`, `scroll`, `back`, `sleep`, `screenshot`, `layoutBounds`, `snapshot`, `elements`, `viewModels`, `viewModelField`, `inspect`, `field`, `composeTree`, `config`, `logcat`, `network`, `plugins`, `diagnostic`, `screenState`.
+Passos de um job: `launch`, `intent`, `wait` (`selector` e/ou `ready: true`), `waitReady`, `reload` (`mode`), `tap`, `type`, `scroll`, `back`, `sleep`, `screenshot` (`waitReady: true` espera a tela pronta), `layoutBounds`, `snapshot`, `elements`, `viewModels`, `viewModelField`, `inspect`, `field`, `composeTree`, `config`, `logcat`, `network`, `plugins`, `diagnostic`, `screenState`.
+
+### Tela pronta
+
+Todo snapshot do Worker traz `screenReady = { ready, activity, readySince, settledForMs, quietMs, waitingFor, fragments }`. A tela fica pronta quando a Activity do topo está em `onResume` com o primeiro quadro desenhado, os fragments androidx visíveis estão `RESUMED` e não há quadro, passada de layout, mensagem da thread principal nem troca de rede pendente por 300 ms; o Worker acorda no fim desse período e publica a virada. Enquanto não está pronta, `waitingFor` traz os motivos em português (por exemplo `"quadro pendente (animação, transição ou recomposição)"`). Plugins têm `screen.ready`, `lab.on('ready', fn)` (cada vez que a tela fica pronta) e `await lab.waitReady({ timeoutMs })`, do runtime de plugins do próprio bundle.
 
 ## Exemplos
 
 - [`examples/apk-lab-client.mjs`](examples/apk-lab-client.mjs) — cliente Node sem dependências (runner, fila, leases, SSE);
 - [`examples/run-job.mjs`](examples/run-job.mjs) — envia um job e salva os artefatos;
 - [`examples/curl.sh`](examples/curl.sh) — um passeio pela API com curl;
-- as 15 [receitas da documentação](https://madmax-dev-br.github.io/apk-lab-node-service/#receitas) (mock de endpoint, erro com atraso, redirecionamento, allow list/offline, permissões, retornos de método, Activities ignoradas, dispositivo ao vivo, deep link, job, lease, SSE, plugin, captura de elemento, CORS).
+- as 17 [receitas da documentação](https://madmax-dev-br.github.io/apk-lab-node-service/#receitas) (mock de endpoint, erro com atraso, redirecionamento, allow list/offline, permissões, retornos de método, Activities ignoradas, dispositivo ao vivo, deep link, job, lease, SSE, plugin, captura de elemento, CORS, recarregar a tela — recriar ou reabrir —, esperar a tela ficar pronta e tirar o print).
 
 ```js
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { RunnerClient } from './examples/apk-lab-client.mjs';
 const runner = new RunnerClient({ url: 'http://127.0.0.1:8081', token: process.env.RUNNER_TOKEN });
 const session = await runner.createSession(await readFile('app.apk'), {
@@ -137,7 +143,9 @@ const session = await runner.createSession(await readFile('app.apk'), {
     headers: [{ name: 'Content-Type', value: 'application/json' }], body: '{"nome":"Maria"}' }],
 });
 await session.tap({ selector: { testTag: 'perfil' } });
-await session.wait({ textContains: 'Maria' });
+await session.wait({ textContains: 'Maria' }, { ready: true });   // o texto e a "Tela pronta"
+await writeFile('perfil.png', await session.screenshot({ waitReady: true }));
+await session.reload('reopen');                                     // instância nova da Activity: o conteúdo carrega de novo
 console.log((await session.network()).requests);
 await session.close();
 ```
@@ -177,6 +185,6 @@ Código deste repositório: MIT ([LICENSE](LICENSE)). O runtime baixado não faz
 
 ## English summary
 
-**APK Lab Node Service** runs real Android APKs on a Node.js server with the public APK Web Lab runtime. The **runner** loads APKs into VM sessions (one `worker_threads` Worker per session running the bundle's unmodified `apk-worker.js` through its own `APKWorkerClient`) and exposes every feature of the site over REST + SSE: the full session config applied before the app starts (device, network allow list / host map / offline, endpoint mocks, permissions and location, method return overrides, ignored Activities, time and memory limits, app data), input (launch, intents/deep links, tap by coordinates or selector, type, scroll, back, wait), screen reading (snapshot, Compose tree, named layout bounds, server-side PNG screenshots of the screen or one element), VM inspection (ViewModels, fragments, fields), logcat and network log (paged or streamed), diagnostics, and server-side plugins with the site's `lab` API (off by default). The **queue** schedules declarative jobs (steps with outputs and artifacts) and interactive leases (a proxied runner session) across runners with priorities, per-client fairness, health-checked capacity, retries, cancellation, SSE progress and retention (in memory or a JSON file; the store interface is four methods, easy to back with a database).
+**APK Lab Node Service** runs real Android APKs on a Node.js server with the public APK Web Lab runtime. The **runner** loads APKs into VM sessions (one `worker_threads` Worker per session running the bundle's unmodified `apk-worker.js` through its own `APKWorkerClient`) and exposes every feature of the site over REST + SSE: the full session config applied before the app starts (device, network allow list / host map / offline, endpoint mocks, permissions and location, method return overrides, ignored Activities, time and memory limits, app data), input (launch, intents/deep links, tap by coordinates or selector, type, scroll, back, wait, reload the current Activity: `POST /sessions/:id/reload` with mode `recreate` — saved state and retained ViewModels kept — or `reopen` — a fresh instance with the same Intent), "screen ready" (`snapshot.screenReady`; `GET /sessions/:id/ready`, `POST /wait { ready: true }` alone or with a selector, `?waitReady=1` on screenshots, an SSE `ready` event on each flip, queue steps `reload`, `waitReady` and `screenshot { waitReady }`, and `screen.ready` / `lab.on('ready')` / `lab.waitReady()` in plugins plus the "Print na tela pronta" template), screen reading (snapshot, Compose tree, named layout bounds, server-side PNG screenshots of the screen or one element), VM inspection (ViewModels, fragments, fields), logcat and network log (paged or streamed), diagnostics, and server-side plugins with the site's `lab` API (off by default). The **queue** schedules declarative jobs (steps with outputs and artifacts) and interactive leases (a proxied runner session) across runners with priorities, per-client fairness, health-checked capacity, retries, cancellation, SSE progress and retention (in memory or a JSON file; the store interface is four methods, easy to back with a database).
 
 Setup: `npm run fetch-runtime` (pinned public build, every file SHA-256 checked), then `RUNNER_TOKEN=… npm run start:runner` and `QUEUE_CLIENTS=id:token QUEUE_RUNNERS=http://127.0.0.1:8081 QUEUE_RUNNER_TOKEN=… npm run start:queue`, or `docker compose up --build`. Security: Bearer tokens, closed app network unless the operator allows hosts, plugins run client JavaScript on the server and must only be enabled for trusted users. CORS: none for the VM on the server; the services' own APIs answer CORS only for configured origins. Full docs and 15 copyable recipes: https://madmax-dev-br.github.io/apk-lab-node-service/. License: MIT for this code; the downloaded runtime keeps its own licenses.

@@ -8,6 +8,7 @@ import { HttpError, badRequest } from '../../lib/http.mjs';
 import { rasterHooks, isRasterKey } from './rasters.mjs';
 import { deviceForVM, missingApisMode, RESTART_KEYS, validatePlugins } from './config.mjs';
 import { createServerPluginHost } from './plugins.mjs';
+import { screenReadyOut, READY_TIMEOUT_MS, RELOAD_MODES } from './readiness.mjs';
 
 const VM_WORKER_URL = new URL('./vm-worker.mjs', import.meta.url);
 const LOG_RING = 5000, NET_RING = 2000, MAX_QUEUED_OPERATIONS = 32, MAX_RUNTIME_ERRORS = 20;
@@ -46,7 +47,7 @@ export class Session extends EventEmitter {
     this.logs = []; this.logTotal = 0; this.logDropped = 0; this.lastLogSeq = -1; this.logStreaming = false; this.logHolds = 0; this.logListeners = 0;
     this.netlog = new Map(); this.netTotal = 0;
     this.permissionConfig = null; this.permissionRequests = new Map(); this.apiGaps = null; this.metrics = { loadMs: null, launchMs: null, operations: 0 };
-    this.plugins = null; this.apk = null;
+    this.plugins = null; this.apk = null; this.lastReady = null; this.snapshotAt = 0;
   }
   touch() { this.lastUsedAt = Date.now(); }
 
@@ -82,10 +83,14 @@ export class Session extends EventEmitter {
   }
   setSnapshot(snapshot) {
     if (!snapshot) return;
-    this.snapshot = snapshot; this.snapshotSeq++;
+    this.snapshot = snapshot; this.snapshotSeq++; this.snapshotAt = Date.now();
     this.plugins?.host.snapshot(snapshot);
     this.emit('snapshot', snapshot);
-    this.emit('event', 'snapshot', { seq: this.snapshotSeq, activity: snapshot.activityName ?? null, closed: !!snapshot.closed });
+    this.emit('event', 'snapshot', { seq: this.snapshotSeq, activity: snapshot.activityName ?? null, closed: !!snapshot.closed, ready: snapshot.screenReady ? !!snapshot.screenReady.ready : null });
+    // "Tela pronta" flips (the Worker posts a snapshot when the quiet period ends even when nothing else happens): one 'ready' event per change, true or false
+    const ready = snapshot.screenReady ? !!snapshot.screenReady.ready : null;
+    if (ready !== null && ready !== (this.lastReady ?? false)) { this.lastReady = ready; this.emit('event', 'ready', { seq: this.snapshotSeq, ...screenReadyOut(snapshot) }); }
+    else if (ready !== null) this.lastReady = ready;
   }
 
   /** Serializes VM operations (the Worker runs one at a time); at most MAX_QUEUED_OPERATIONS wait. */
@@ -119,7 +124,7 @@ export class Session extends EventEmitter {
   async loadNow() {
     const config = this.config, heapMb = Math.min(this.limits.vmHeapMaxMb, Math.max(this.limits.vmHeapMb, (config.memoryMiB || 0) + 1024));
     this.client?.cancel(); this.client?.rasters?.reset(); this.plugins?.dispose(); this.plugins = null;
-    this.state = 'loading'; this.snapshot = null; this.logs = []; this.lastLogSeq = -1; this.netlog.clear(); this.permissionRequests.clear(); this.lastError = null; this.runtimeErrors = []; this.logStreaming = false;
+    this.state = 'loading'; this.snapshot = null; this.lastReady = null; this.logs = []; this.lastLogSeq = -1; this.netlog.clear(); this.permissionRequests.clear(); this.lastError = null; this.runtimeErrors = []; this.logStreaming = false;
     const client = this.client = this.createClient(heapMb);
     const bytes = this.apk.buffer.slice(this.apk.byteOffset, this.apk.byteOffset + this.apk.byteLength);   // a copy: the Worker takes ownership of it
     const started = performance.now();
@@ -182,6 +187,11 @@ export class Session extends EventEmitter {
   }
   launch(activity) { return this.op('launch', () => this.launchNow(activity)); }
   intent(intent) { return this.op('intent', async () => { const { deepLink, snapshot } = await this.client.startIntent(intent); if (snapshot) { this.state = 'running'; this.setSnapshot(snapshot); } return { deepLink, snapshot }; }); }
+  /** "Recriar" (recreate: Activity.recreate(), saved state and retained ViewModels kept) or "Reabrir" (reopen: a fresh instance with the same Intent, no saved state). */
+  reload(mode = 'recreate') {
+    if (!RELOAD_MODES.includes(mode)) throw badRequest(`reload: mode must be ${RELOAD_MODES.join(' or ')}`);
+    return this.op('reload', async () => { const snapshot = await this.client.reloadActivity({ mode }); this.state = 'running'; this.setSnapshot(snapshot); return snapshot; });
+  }
   back() { return this.op('back', async () => { const snapshot = await this.client.back(); this.setSnapshot(snapshot); return snapshot; }); }
   /** One raw Worker input (click/input/check/focus/press/scroll/scrollby/compose-action/pointer) on ids the caller took from a snapshot. */
   raw(type, payload) {
@@ -225,17 +235,38 @@ export class Session extends EventEmitter {
     if (!element) throw new HttpError(404, 'element-not-found', `No element on the screen matches ${JSON.stringify(selector)}${all.length ? ` (only ${all.length} matches)` : ''}`, { activity: this.snapshot?.activityName ?? null });
     return element;
   }
-  /** Waits until an element matching `selector` is on the screen (or gone, with gone: true). Resolves with the element (or null) and the elapsed time. */
-  waitFor(selector, { timeoutMs = 10000, gone = false } = {}) {
-    const started = Date.now(), check = () => { if (!this.snapshot) return undefined; const found = this.find(selector)[0] ?? null; return gone ? (found ? undefined : null) : found ?? undefined; };
+  /**
+   * Waits until an element matching `selector` is on the screen (or gone, with gone: true) and, with ready: true, the screen is "Tela pronta" (snapshot.screenReady.ready);
+   * either condition alone works. Resolves with the element (or null), the elapsed time and the screenReady of the snapshot that satisfied it.
+   */
+  waitFor(selector, { timeoutMs = 10000, gone = false, ready = false } = {}) {
+    if (!selector && !ready) throw badRequest('wait needs a selector, ready: true, or both');
+    const started = Date.now(), check = () => {
+      if (!this.snapshot) return undefined;
+      if (ready && !this.snapshot.screenReady?.ready) return undefined;
+      if (!selector) return null;
+      const found = this.find(selector)[0] ?? null; return gone ? (found ? undefined : null) : found ?? undefined;
+    };
     return new Promise((resolve, reject) => {
-      const done = (value, error) => { clearTimeout(timer); this.off('snapshot', onSnapshot); this.off('closed', onClosed); if (error) reject(error); else resolve({ element: value, waitedMs: Date.now() - started }); };
+      const done = (value, error) => { clearTimeout(timer); this.off('snapshot', onSnapshot); this.off('closed', onClosed); if (error) reject(error); else resolve({ element: value, waitedMs: Date.now() - started, screenReady: screenReadyOut(this.snapshot) }); };
       const onSnapshot = () => { try { const value = check(); if (value !== undefined) done(value); } catch (error) { done(null, error); } };
       const onClosed = () => done(null, conflict('session-closed', 'The session closed while waiting'));
-      const timer = setTimeout(() => done(null, new HttpError(408, 'wait-timeout', `Timed out after ${timeoutMs} ms waiting for ${gone ? 'the disappearance of ' : ''}${JSON.stringify(selector)}`, { activity: this.snapshot?.activityName ?? null })), timeoutMs);
+      const timer = setTimeout(() => {
+        const screenReady = screenReadyOut(this.snapshot), notReady = ready && !screenReady?.ready, waitingFor = notReady ? (screenReady?.waitingFor?.length ? screenReady.waitingFor : [this.snapshot ? 'sem informação de prontidão (screenReady)' : 'nenhuma tela ainda']) : [];
+        const what = [selector ? `${gone ? 'the disappearance of ' : ''}${JSON.stringify(selector)}` : null, ready ? 'the screen to be ready' : null].filter(Boolean).join(' and ');
+        done(null, new HttpError(408, notReady && !selector ? 'ready-timeout' : 'wait-timeout', `Timed out after ${timeoutMs} ms waiting for ${what}${notReady ? ` (waiting for: ${waitingFor.join('; ')})` : ''}`, { activity: this.snapshot?.activityName ?? null, waitingFor, screenReady }));
+      }, timeoutMs);
       this.on('snapshot', onSnapshot); this.once('closed', onClosed);
       onSnapshot();
     });
+  }
+  /** Resolves once the screen is "Tela pronta"; 408 ready-timeout with the reasons it still waits for. */
+  waitReady({ timeoutMs = READY_TIMEOUT_MS } = {}) { return this.waitFor(null, { ready: true, timeoutMs }); }
+  /** The latest screenReady and whether it describes the screen now: `current` is false while an operation runs (its snapshot is not in yet), before the first screen or when the VM stopped. */
+  readiness() {
+    const s = this.snapshot, screenReady = screenReadyOut(s), running = !!this.client?.worker && ['running', 'ready'].includes(this.state);
+    const current = !!s && !!screenReady && running && !this.busyWith;
+    return { ready: current && screenReady.ready, current, state: this.state, busyWith: this.busyWith, activity: s?.activityName ?? null, seq: this.snapshotSeq, snapshotAgeMs: s ? Date.now() - this.snapshotAt : null, screenReady };
   }
   /** Tap at screen coordinates (dp): a Compose owner under the point gets a real pointer DOWN/UP; otherwise the deepest clickable View is clicked (View.performClick path of the Worker). */
   tapAt(x, y, { longPressMs = 0 } = {}) {
@@ -306,16 +337,20 @@ export class Session extends EventEmitter {
   }
 
   // ---- screenshots -------------------------------------------------------------------------------------------------------------------------------------------------------
-  async screenshot({ scale = 1, systemBars = true } = {}) {
+  /** With waitReady, first waits for "Tela pronta" (readyTimeoutMs, 408 ready-timeout); the result carries `ready` { waitedMs, screenReady }. */
+  async screenshot({ scale = 1, systemBars = true, waitReady = false, readyTimeoutMs = READY_TIMEOUT_MS } = {}) {
+    const ready = waitReady ? await this.waitReady({ timeoutMs: readyTimeoutMs }) : null;
     if (!this.snapshot) throw conflict('no-screen', 'No screen yet: launch the app first');
-    return this.painter.paint(this.snapshot, { scale, systemBars });
+    const shot = await this.painter.paint(this.snapshot, { scale, systemBars });
+    return { ...shot, ready: ready ? { waitedMs: ready.waitedMs, screenReady: ready.screenReady } : null };
   }
-  async elementScreenshot(key, { scale = 1 } = {}) {
+  async elementScreenshot(key, { scale = 1, waitReady = false, readyTimeoutMs = READY_TIMEOUT_MS } = {}) {
+    const ready = waitReady ? await this.waitReady({ timeoutMs: readyTimeoutMs }) : null;
     if (!this.snapshot) throw conflict('no-screen', 'No screen yet: launch the app first');
     const element = (await this.layoutBounds({ names: false })).find(item => item.key === key);
     if (!element) throw new HttpError(404, 'element-not-found', `Element ${key} is not on the screen (GET /sessions/${this.id}/layout-bounds lists the current keys)`);
     const result = await this.painter.paint(this.snapshot, { scale, crop: element.screenBounds });
-    return { ...result, element };
+    return { ...result, element, ready: ready ? { waitedMs: ready.waitedMs, screenReady: ready.screenReady } : null };
   }
   async capturePluginImage({ snapshot, element, maxWidth }) {
     const offset = this.contentOffset(), b = element ? (element.windowBounds ?? element.bounds) : null;
@@ -406,7 +441,7 @@ export class Session extends EventEmitter {
   describe() {
     return { id: this.id, state: this.state, busyWith: this.busyWith, queued: this.queued, createdAt: new Date(this.createdAt).toISOString(), lastUsedAt: new Date(this.lastUsedAt).toISOString(),
       packageName: this.inventory?.packageName ?? null, launcherActivity: this.inventory?.launcherActivity ?? null, activity: this.snapshot?.activityName ?? null, canGoBack: !!this.snapshot?.canGoBack,
-      closed: !!this.snapshot?.closed, appData: this.appData, metrics: this.metrics, lastError: this.lastError ? { operation: this.lastError.operation, message: this.lastError.message } : null,
+      closed: !!this.snapshot?.closed, screenReady: this.snapshot?.screenReady ? !!this.snapshot.screenReady.ready : null, appData: this.appData, metrics: this.metrics, lastError: this.lastError ? { operation: this.lastError.operation, message: this.lastError.message } : null,
       plugins: this.config.plugins?.length ?? 0, logcatStreaming: this.logStreaming, runtimeRevision: this.bundle.info.revision };
   }
   close(reason = 'closed') {

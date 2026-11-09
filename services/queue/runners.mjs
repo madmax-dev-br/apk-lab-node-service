@@ -43,11 +43,11 @@ export class RunnerClient {
   session(id, method, path, body, { signal, timeoutMs } = {}) {
     return this.request(method, `/sessions/${encodeURIComponent(id)}${path}`, { body: body === undefined ? undefined : JSON.stringify(body), headers: body === undefined ? {} : { 'content-type': 'application/json' }, signal, timeoutMs });
   }
-  async sessionBytes(id, path, { signal } = {}) {
-    const response = await this.request('GET', `/sessions/${encodeURIComponent(id)}${path}`, { raw: true, signal });
+  async sessionBytes(id, path, { signal, timeoutMs } = {}) {
+    const response = await this.request('GET', `/sessions/${encodeURIComponent(id)}${path}`, { raw: true, signal, ...(timeoutMs ? { timeoutMs } : {}) });
     const bytes = Buffer.from(await response.arrayBuffer());
-    if (!response.ok) { let json = null; try { json = JSON.parse(bytes.toString('utf8')); } catch { /* not JSON */ } throw new RunnerError(`runner ${this.id}: ${response.status} ${json?.error?.message ?? ''}`, { status: response.status, code: json?.error?.code ?? `http-${response.status}`, infrastructure: response.status >= 500 }); }
-    return { bytes, type: response.headers.get('content-type'), notes: response.headers.get('x-screenshot-notes') };
+    if (!response.ok) { let json = null; try { json = JSON.parse(bytes.toString('utf8')); } catch { /* not JSON */ } throw new RunnerError(`runner ${this.id}: ${response.status} ${json?.error?.message ?? ''}`, { status: response.status, code: json?.error?.code ?? `http-${response.status}`, body: json, infrastructure: response.status >= 500 }); }
+    return { bytes, type: response.headers.get('content-type'), notes: response.headers.get('x-screenshot-notes'), ready: response.headers.get('x-screen-ready') };
   }
   async deleteSession(id) { try { await this.request('DELETE', `/sessions/${encodeURIComponent(id)}`, { timeoutMs: 10000 }); } catch { /* already gone */ } }
 }

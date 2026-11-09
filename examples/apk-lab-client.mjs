@@ -53,17 +53,25 @@ export class Session {
   launch(activity) { return this.call('POST', '/launch', activity ? { activity } : {}); }
   intent(intent) { return this.call('POST', '/intent', intent); }
   back() { return this.call('POST', '/back', {}); }
+  /** "Recriar" ('recreate': Activity.recreate(), saved state and retained ViewModels kept) or "Reabrir" ('reopen': a fresh instance with the same Intent). */
+  reload(mode = 'recreate') { return this.call('POST', '/reload', { mode }); }
+  /** "Tela pronta" now: { ready, current, activity, screenReady: { ready, waitingFor, fragments, ... } }. */
+  ready() { return this.call('GET', '/ready'); }
+  /** Resolves once the screen is ready (ApiError 408 'ready-timeout' with error.details.waitingFor otherwise). */
+  waitReady({ timeoutMs = 15000 } = {}) { return this.call('POST', '/wait', { ready: true, timeoutMs }); }
   tap(target) { return this.call('POST', '/tap', target); }                       // { selector } | { key } | { x, y } (+ longPress)
   type(selector, text, { append = false } = {}) { return this.call('POST', '/type', { selector, text, append }); }
   scroll(target) { return this.call('POST', '/scroll', target); }                 // { selector, dx, dy } | { x, y, dx, dy }
   input(raw) { return this.call('POST', '/input', raw); }                         // raw Worker input: { type: 'click' | 'compose-action' | 'pointer' | ..., ... }
-  wait(selector, { timeoutMs = 10000, gone = false } = {}) { return this.call('POST', '/wait', { selector, timeoutMs, gone }); }
+  /** An element (selector), "Tela pronta" (ready: true) or both: wait(null, { ready: true }) is waitReady(). */
+  wait(selector, { timeoutMs = 10000, gone = false, ready = false } = {}) { return this.call('POST', '/wait', { ...(selector ? { selector } : {}), timeoutMs, gone, ready }); }
   snapshot({ full = false } = {}) { return this.call('GET', `/snapshot${full ? '?full=1' : ''}`); }
   layoutBounds({ names = true } = {}) { return this.call('GET', `/layout-bounds?names=${names ? 1 : 0}`); }
   elements(selector = {}) { return this.call('GET', `/elements?${new URLSearchParams(Object.entries(selector).map(([k, v]) => [k, String(v)]))}`); }
   composeTree(maxNodes = 2000) { return this.call('GET', `/compose-tree?maxNodes=${maxNodes}`); }
-  screenshot({ scale = 1, systemBars = true } = {}) { return this.http.bytes(`${this.base}/screenshot.png?scale=${scale}&systemBars=${systemBars ? 1 : 0}`); }
-  elementScreenshot(key, { scale = 1 } = {}) { return this.http.bytes(`${this.base}/elements/${encodeURIComponent(key)}/screenshot.png?scale=${scale}`); }
+  /** waitReady: true waits for "Tela pronta" first (readyTimeoutMs, 15 s by default). */
+  screenshot({ scale = 1, systemBars = true, waitReady = false, readyTimeoutMs = 15000 } = {}) { return this.http.bytes(`${this.base}/screenshot.png?scale=${scale}&systemBars=${systemBars ? 1 : 0}${waitReady ? `&waitReady=1&readyTimeoutMs=${readyTimeoutMs}` : ''}`); }
+  elementScreenshot(key, { scale = 1, waitReady = false, readyTimeoutMs = 15000 } = {}) { return this.http.bytes(`${this.base}/elements/${encodeURIComponent(key)}/screenshot.png?scale=${scale}${waitReady ? `&waitReady=1&readyTimeoutMs=${readyTimeoutMs}` : ''}`); }
   config() { return this.call('GET', '/config'); }
   updateConfig(partial) { return this.call('PATCH', '/config', partial); }
   restart(config) { return this.call('POST', '/restart', config ? { config } : {}); }
@@ -87,6 +95,8 @@ export class Session {
   streamLogcat(onLine) { return this.http.stream(`${this.base}/logcat/stream`, ({ event, data }) => event === 'log' && onLine(data)); }
   streamNetwork(onRequest) { return this.http.stream(`${this.base}/network/stream`, ({ event, data }) => event === 'request' && onRequest(data)); }
   streamEvents(onEvent) { return this.http.stream(`${this.base}/events`, onEvent); }
+  /** onChange({ ready, activity, waitingFor, ... }) each time "Tela pronta" flips (true or false). */
+  streamReady(onChange) { return this.http.stream(`${this.base}/events`, ({ event, data }) => event === 'ready' && onChange(data)); }
   streamPlugins(onOutput) { return this.http.stream(`${this.base}/plugins/stream`, ({ event, data }) => event === 'plugin' && onOutput(data)); }
   close() { return this.call('DELETE'); }
 }

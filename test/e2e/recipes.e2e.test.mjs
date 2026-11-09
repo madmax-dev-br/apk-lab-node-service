@@ -112,3 +112,44 @@ test('receitas 10 e 11: job na fila com passos e resultados; lease interativo', 
   await session.tap({ selector: { text: 'Load' } }); await session.wait({ textContains: 'pelo lease' });
   assert.equal((await release()).state, 'released');
 });
+
+test('receita 16: recarregar a tela — recreate mantém o ViewModel, reopen cria outro e carrega de novo', { skip, timeout: 90000 }, async () => {
+  const session = await runner.createSession(await apk(COMPOSE), { launch: true });
+  try {
+    await session.waitReady();
+    const antes = (await session.viewModels()).find(m => !m.library);
+    const recreated = await session.reload('recreate'); assert.equal(recreated.mode, 'recreate');
+    assert.equal((await session.viewModels()).find(m => !m.library).handle, antes.handle);
+    await session.updateConfig({ endpointMocks: [{ method: 'GET', url: '/v1/pedidos', body: '[]' }] });
+    await session.reload('reopen');
+    assert.notEqual((await session.viewModels()).find(m => !m.library).handle, antes.handle);
+    const pronta = await session.waitReady(); assert.equal(pronta.ready, true);
+  } finally { await session.close(); }
+});
+
+test('receita 17: esperar a tela ficar pronta e tirar o print (sessão com mock e job na fila)', { skip, timeout: 120000 }, async () => {
+  const mocks = [{ method: 'GET', url: URL_PERFIL, status: 200, headers: [{ name: 'Content-Type', value: 'application/json' }], body: '{"nome":"Maria"}' }];
+  const session = await runner.createSession(await apk(NET), { endpointMocks: mocks });
+  const flips = [];
+  const stream = session.streamReady(e => flips.push(e.ready));
+  try {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    await session.launch();
+    const waited = await session.waitReady({ timeoutMs: 15000 }); assert.equal(waited.ready, true);
+    assert.equal((await session.ready()).ready, true);
+    assert.ok(helpers.pngSize(await session.screenshot({ waitReady: true })));
+    await session.tap({ selector: { text: 'Load' } });
+    const both = await session.wait({ textContains: 'Maria' }, { ready: true, timeoutMs: 15000 }); assert.equal(both.ready, true); assert.ok(both.element);
+    for (let i = 0; i < 50 && !flips.includes(true); i++) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(flips.includes(true), 'the ready flip reached the events stream');
+    await assert.rejects(session.wait(null, { timeoutMs: 100 }), error => error.status === 400);
+  } finally { stream.stop(); await session.close(); }
+
+  const job = await queueClient.submitJob(await apk(NET), { config: { endpointMocks: [{ method: 'GET', url: URL_PERFIL, body: '{"nome":"Maria"}' }] }, steps: [
+    { type: 'launch' }, { type: 'waitReady', timeoutMs: 15000 }, { type: 'screenshot', name: 'pronta', waitReady: true },
+    { type: 'reload', mode: 'reopen' }, { type: 'tap', selector: { text: 'Load' } }, { type: 'wait', ready: true, selector: { textContains: 'Maria' } }, { type: 'screenshot', name: 'reaberta', waitReady: true } ] });
+  const done = await queueClient.waitJob(job.id, { intervalMs: 200 });
+  assert.equal(done.state, 'succeeded', JSON.stringify(done.error ?? done.result?.steps));
+  assert.deepEqual(done.result.artifacts.map(a => a.name), ['pronta.png', 'reaberta.png']);
+  assert.ok(helpers.pngSize(await queueClient.artifact(done, 'pronta.png')));
+});

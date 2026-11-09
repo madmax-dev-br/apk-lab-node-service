@@ -153,3 +153,23 @@ test('JSON file store: queued jobs survive a restart', async () => {
     await queue.close({ keepData: false });
   } finally { await runner.close(); }
 });
+
+test('reload, waitReady, wait { ready } and screenshot { waitReady } steps reach the runner endpoints', async () => {
+  const t = await start();
+  try {
+    const submitted = await t.submit({ steps: [{ type: 'launch' }, { type: 'reload', mode: 'reopen' }, { type: 'waitReady', timeoutMs: 20000 }, { type: 'wait', ready: true, selector: { text: 'Olá' } }, { type: 'screenshot', name: 'pronta', waitReady: true }, { type: 'reload' }] });
+    assert.equal(submitted.status, 202, JSON.stringify(submitted.body));
+    const done = await t.until(submitted.body.id, ['succeeded', 'failed']);
+    assert.equal(done.state, 'succeeded', JSON.stringify(done.error));
+    const [, reopen, ready, wait, shot, recreate] = done.result.steps;
+    assert.deepEqual(reopen.output, { mode: 'reopen', activity: 'dev.example.fake.Main', ready: false });
+    assert.equal(ready.output.ready, true); assert.equal(wait.output.element.key, 'c:1:2');
+    assert.deepEqual(shot.output.ready, { ready: true, waitedMs: 3, activity: 'dev.example.fake.Main' }); assert.equal(recreate.output.mode, 'recreate');
+    const requests = t.runners[0].state.requests;
+    const bodies = requests.filter(item => /\/(reload|wait)$/.test(item.path)).map(item => [item.path.split('/').pop(), JSON.parse(item.body)]);
+    assert.deepEqual(bodies, [['reload', { mode: 'reopen' }], ['wait', { ready: true, timeoutMs: 20000 }], ['wait', { selector: { text: 'Olá' }, timeoutMs: 10000, gone: false, ready: true }], ['reload', { mode: 'recreate' }]]);
+    assert.match(requests.find(item => item.path.endsWith('/screenshot.png')).search, /waitReady=1&readyTimeoutMs=15000/);
+    assert.match((await t.submit({ steps: [{ type: 'reload', mode: 'refresh' }] })).body.error.message, /mode must be/);
+    assert.match((await t.submit({ steps: [{ type: 'wait', gone: true }] })).body.error.message, /needs a selector, ready: true, or both/);
+  } finally { await t.close(); }
+});

@@ -11,7 +11,7 @@ import { QueueClient } from './apk-lab-client.mjs';
 const [apkFile, jobFile, outDir = 'job-output'] = process.argv.slice(2);
 if (!apkFile) { console.error('usage: run-job.mjs <app.apk> [job.json] [output dir]'); process.exit(2); }
 const queue = new QueueClient({ url: process.env.QUEUE ?? 'http://127.0.0.1:8080', token: process.env.QUEUE_TOKEN });
-const job = jobFile ? JSON.parse(await readFile(jobFile, 'utf8')) : { steps: [{ type: 'launch' }, { type: 'screenshot', name: 'tela' }], collect: { logcat: true } };
+const job = jobFile ? JSON.parse(await readFile(jobFile, 'utf8')) : { steps: [{ type: 'launch' }, { type: 'waitReady' }, { type: 'screenshot', name: 'tela', waitReady: true }], collect: { logcat: true } };
 const submitted = await queue.submitJob(await readFile(apkFile), job);
 console.log(`job ${submitted.id} queued (position ${submitted.position})`);
 const progress = queue.jobEvents(submitted.id, ({ event, data }) => { if (event === 'step-finished') console.log(`  step ${data.index}: ${data.ok ? 'ok' : `failed: ${data.error?.message}`} (${data.ms} ms)`); else if (event !== 'end') console.log(`  ${event}`); });

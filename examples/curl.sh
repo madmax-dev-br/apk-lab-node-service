@@ -13,7 +13,10 @@ SESSION=$(curl -s -H "$AUTH" -F "apk=@$APK" -F 'config={"launch":true,"endpointM
 echo "session $SESSION"
 echo "== screen"; curl -s -H "$AUTH" "$RUNNER/sessions/$SESSION" ; echo
 echo "== layout bounds (names, keys, testTags)"; curl -s -H "$AUTH" "$RUNNER/sessions/$SESSION/layout-bounds?names=0" | head -c 1200; echo
-echo "== screenshot"; curl -s -H "$AUTH" -o screen.png "$RUNNER/sessions/$SESSION/screenshot.png"; echo "saved screen.png"
+echo "== ready"; curl -s -X POST -H "$AUTH" -H 'content-type: application/json' -d '{"ready":true,"timeoutMs":15000}' "$RUNNER/sessions/$SESSION/wait"; echo
+echo "== screenshot"; curl -s -H "$AUTH" -o screen.png "$RUNNER/sessions/$SESSION/screenshot.png?waitReady=1"; echo "saved screen.png"
+echo "== reload (recreate)"; curl -s -X POST -H "$AUTH" -H 'content-type: application/json' -d '{"mode":"recreate"}' "$RUNNER/sessions/$SESSION/reload" | head -c 300; echo
+echo "== ready?"; curl -s -H "$AUTH" "$RUNNER/sessions/$SESSION/ready"; echo
 echo "== live config: landscape, dark theme"; curl -s -X PATCH -H "$AUTH" -H "$JSON" -d '{"device":{"orientation":"landscape","darkTheme":true}}' "$RUNNER/sessions/$SESSION/config" | head -c 400; echo
 echo "== network log"; curl -s -H "$AUTH" "$RUNNER/sessions/$SESSION/network" | head -c 800; echo
 echo "== logcat"; curl -s -H "$AUTH" "$RUNNER/sessions/$SESSION/logcat?limit=20" | head -c 800; echo

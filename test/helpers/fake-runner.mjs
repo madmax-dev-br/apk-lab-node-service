@@ -5,11 +5,11 @@ import { createServer } from 'node:http';
 const PNG_1x1 = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082', 'hex');
 
 export async function startFakeRunner({ capacity = 1, failCreates = 0, stepDelayMs = 0, token = 'runner-token', waitFails = false } = {}) {
-  const state = { capacity, failCreates, stepDelayMs, waitFails, sessions: new Map(), calls: [], created: 0, maxConcurrent: 0 };
+  const state = { capacity, failCreates, stepDelayMs, waitFails, sessions: new Map(), calls: [], requests: [], created: 0, maxConcurrent: 0 };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x'), chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks), send = (status, value, type = 'application/json') => { const data = Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value)); res.writeHead(status, { 'content-type': type, 'content-length': data.length }); res.end(data); };
-    state.calls.push(`${req.method} ${url.pathname}`);
+    state.calls.push(`${req.method} ${url.pathname}`); state.requests.push({ method: req.method, path: url.pathname, search: url.search, body: body.toString('utf8') });
     if (url.pathname === '/health') return send(200, { ok: true, available: Math.max(0, state.capacity - state.sessions.size), maxSessions: state.capacity, pluginsAllowed: true, runtimeRevision: 'fake' });
     if (req.headers.authorization !== `Bearer ${token}`) return send(401, { error: { code: 'unauthorized', message: 'no' } });
     if (req.method === 'POST' && url.pathname === '/sessions') {
@@ -23,10 +23,11 @@ export async function startFakeRunner({ capacity = 1, failCreates = 0, stepDelay
     const [, id, rest = ''] = m, session = state.sessions.get(id); if (!session) return send(404, { error: { code: 'not-found', message: `no session ${id}` } });
     if (req.method === 'DELETE' && !rest) { state.sessions.delete(id); return send(200, { closed: true }); }
     if (state.stepDelayMs) await new Promise(resolve => setTimeout(resolve, state.stepDelayMs));
-    if (rest === '/screenshot.png' || /\/elements\/.+\/screenshot\.png/.test(rest)) return send(200, PNG_1x1, 'image/png');
+    if (rest === '/screenshot.png' || /\/elements\/.+\/screenshot\.png/.test(rest)) { if (url.searchParams.get('waitReady') === '1') res.setHeader('x-screen-ready', JSON.stringify({ ready: true, waitedMs: 3, activity: 'dev.example.fake.Main' })); return send(200, PNG_1x1, 'image/png'); }
     if (rest === '/wait' && state.waitFails) return send(408, { error: { code: 'wait-timeout', message: 'timed out' } });
     if (rest === '/launch') return send(200, { launchMs: 5, snapshot: { activity: 'dev.example.fake.Main' } });
-    if (rest === '/wait') return send(200, { element: { key: 'c:1:2' }, waitedMs: 1 });
+    if (rest === '/wait') { const ready = JSON.parse(body.toString('utf8') || '{}').ready === true; return send(200, { element: ready && !JSON.parse(body.toString('utf8')).selector ? null : { key: 'c:1:2' }, waitedMs: 1, activity: 'dev.example.fake.Main', ready: ready || null, screenReady: { ready: true, activity: 'dev.example.fake.Main', waitingFor: [], fragments: [] } }); }
+    if (rest === '/reload') return send(200, { mode: JSON.parse(body.toString('utf8') || '{}').mode ?? 'recreate', snapshot: { activity: 'dev.example.fake.Main', screenReady: { ready: false, waitingFor: ['mensagens da thread principal para processar'] } } });
     if (rest === '/tap' || rest === '/type' || rest === '/back' || rest === '/scroll') return send(200, { via: 'semantics', snapshot: { activity: 'dev.example.fake.Main' } });
     if (rest === '/layout-bounds') return send(200, { activity: 'dev.example.fake.Main', elements: [{ key: 'c:1:2', name: 'x' }] });
     if (rest === '/logcat') return send(200, { lines: [{ seq: 1, tag: 'T', message: 'm' }], total: 1 });

@@ -9,6 +9,7 @@ import { createScreenPainter } from './screen.mjs';
 import { rasterBytes, rasterStats } from './rasters.mjs';
 import { validateConfig } from './config.mjs';
 import { Session, publicSnapshot, inventorySummary } from './session.mjs';
+import { reloadModeFrom, readyFlagFrom, readyQueryFrom, screenReadyOut, SERVICE_PLUGIN_TEMPLATES } from './readiness.mjs';
 
 export const VERSION = '0.1.0';
 const MiB = 1024 * 1024;
@@ -30,6 +31,8 @@ export function runnerSettingsFromEnv() {
   };
 }
 
+/** Headers of a screenshot: notes of the painter, image size and, after ?waitReady=1, how long it waited for "Tela pronta". */
+const shotHeaders = shot => ({ 'x-screenshot-notes': JSON.stringify(shot.notes), 'x-image-size': `${shot.width}x${shot.height}`, ...(shot.ready ? { 'x-screen-ready': JSON.stringify({ ready: !!shot.ready.screenReady?.ready, waitedMs: shot.ready.waitedMs, activity: shot.ready.screenReady?.activity ?? null }) } : {}) });
 const bool = (value, fallback) => value === null || value === undefined ? fallback : /^(1|true|yes|on)$/i.test(value);
 const num = (value, fallback, min, max) => { if (value === null || value === undefined || value === '') return fallback; const n = Number(value); if (!Number.isFinite(n)) throw badRequest(`not a number: ${value}`); return Math.min(max, Math.max(min, n)); };
 const selectorFrom = body => {
@@ -94,7 +97,7 @@ export async function createRunner(settings = runnerSettingsFromEnv(), { log = d
 
   router.add('GET', '/health', () => ({ ok: true, service: 'apk-lab-runner', version: VERSION, runtimeRevision: bundle.info.revision, pluginsAllowed: settings.pluginsAllowed, ...capacity() }), { public: true });
   router.add('GET', '/', () => ({ service: 'apk-lab-runner', version: VERSION, docs: 'https://github.com/madmax-dev-br/apk-lab-node-service#readme' }), { public: true });
-  router.add('GET', '/plugin-templates', () => bundle.PLUGIN_TEMPLATES.map(t => ({ id: t.id, name: t.name, description: t.description, code: t.code })));
+  router.add('GET', '/plugin-templates', () => [...bundle.PLUGIN_TEMPLATES, ...SERVICE_PLUGIN_TEMPLATES].map(t => ({ id: t.id, name: t.name, description: t.description, code: t.code })));
   router.add('GET', '/stats', () => ({ ...capacity(), rasters: rasterStats(), sessions: [...sessions.values()].map(s => s.describe()), memory: process.memoryUsage() }));
 
   // ---- sessions ----------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -143,6 +146,8 @@ export async function createRunner(settings = runnerSettingsFromEnv(), { log = d
   router.add('POST', '/sessions/:id/launch', async ({ params, req }) => { const session = getSession(params.id), body = await json(req); if (body.activity !== undefined && (typeof body.activity !== 'string' || body.activity.length > 500)) throw badRequest('activity must be a class name'); await session.launch(body.activity); return opResult(session, { launchMs: session.metrics.launchMs }); });
   router.add('POST', '/sessions/:id/intent', async ({ params, req }) => { const session = getSession(params.id), { deepLink } = await session.intent(intentFrom(await json(req))); return opResult(session, { deepLink }); });
   router.add('POST', '/sessions/:id/back', async ({ params }) => { const session = getSession(params.id); await session.back(); return opResult(session); });
+  // "Recriar" (mode recreate, the default: Activity.recreate(), saved state and retained ViewModels kept) or "Reabrir" (mode reopen: a fresh instance with the same Intent)
+  router.add('POST', '/sessions/:id/reload', async ({ params, req }) => { const session = getSession(params.id), mode = reloadModeFrom(await json(req)); await session.reload(mode); return opResult(session, { mode }); });
   router.add('POST', '/sessions/:id/tap', async ({ params, req }) => {
     const session = getSession(params.id), body = await json(req), selector = selectorFrom(body), longPress = body.longPress === true;
     if (selector) { const { snapshot, element, ...rest } = await session.tapElement(selector, { longPress }); void snapshot; return opResult(session, { ...rest, element }); }
@@ -157,12 +162,15 @@ export async function createRunner(settings = runnerSettingsFromEnv(), { log = d
     const { type, ...payload } = body; await session.raw(type, payload); return opResult(session);
   });
   router.add('POST', '/sessions/:id/wait', async ({ params, req }) => {
-    const session = getSession(params.id), body = await json(req), selector = selectorFrom(body); if (!selector) throw badRequest('wait needs a selector');
-    const timeoutMs = num(body.timeoutMs, 10000, 0, 120000), { element, waitedMs } = await session.waitFor(selector, { timeoutMs, gone: body.gone === true });
-    return { element, waitedMs, activity: session.snapshot?.activityName ?? null };
+    const session = getSession(params.id), body = await json(req), selector = selectorFrom(body), ready = readyFlagFrom(body.ready);
+    if (!selector && !ready) throw badRequest('wait needs a selector, ready: true, or both');
+    const timeoutMs = num(body.timeoutMs, ready && !selector ? 15000 : 10000, 0, 120000), { element, waitedMs, screenReady } = await session.waitFor(selector, { timeoutMs, gone: body.gone === true, ready });
+    return { element, waitedMs, activity: session.snapshot?.activityName ?? null, ready: screenReady?.ready ?? null, screenReady };
   });
 
   // ---- reading the screen --------------------------------------------------------------------------------------------------------------------------------------------
+  // "Tela pronta": the latest snapshot.screenReady and whether it is current (no operation in flight, VM running)
+  router.add('GET', '/sessions/:id/ready', ({ params }) => getSession(params.id).readiness());
   router.add('GET', '/sessions/:id/snapshot', ({ params, url }) => { const session = getSession(params.id); if (url.searchParams.get('full') === '1') return publicSnapshot(session.snapshot, { trace: num(url.searchParams.get('trace'), 50, 0, 512) }); return summary(session); });
   router.add('GET', '/sessions/:id/layout-bounds', async ({ params, url }) => { const session = getSession(params.id); return { activity: session.snapshot?.activityName ?? null, elements: await session.layoutBounds({ names: bool(url.searchParams.get('names'), true) }) }; });
   router.add('GET', '/sessions/:id/elements', async ({ params, url }) => { const session = getSession(params.id), selector = selectorFromQuery(url); if (!session.snapshot) return { elements: [] }; return { elements: selector ? session.find(selector) : await session.layoutBounds({ names: false }) }; });
@@ -170,12 +178,12 @@ export async function createRunner(settings = runnerSettingsFromEnv(), { log = d
   router.add('GET', '/sessions/:id/screen-state', async ({ params }) => (await getSession(params.id).screenState()) ?? { text: null });
   router.add('GET', '/sessions/:id/diagnostic', async ({ params }) => getSession(params.id).diagnostic());
   router.add('GET', '/sessions/:id/screenshot.png', async ({ params, url, res }) => {
-    const shot = await getSession(params.id).screenshot({ scale: num(url.searchParams.get('scale'), 1, 0.1, 4), systemBars: bool(url.searchParams.get('systemBars'), true) });
-    sendBytes(res, 200, 'image/png', shot.png, { 'x-screenshot-notes': JSON.stringify(shot.notes), 'x-image-size': `${shot.width}x${shot.height}` });
+    const shot = await getSession(params.id).screenshot({ scale: num(url.searchParams.get('scale'), 1, 0.1, 4), systemBars: bool(url.searchParams.get('systemBars'), true), ...readyQueryFrom(url.searchParams) });
+    sendBytes(res, 200, 'image/png', shot.png, shotHeaders(shot));
   });
   router.add('GET', '/sessions/:id/elements/:key/screenshot.png', async ({ params, url, res }) => {
-    const shot = await getSession(params.id).elementScreenshot(params.key, { scale: num(url.searchParams.get('scale'), 1, 0.1, 4) });
-    sendBytes(res, 200, 'image/png', shot.png, { 'x-screenshot-notes': JSON.stringify(shot.notes), 'x-image-size': `${shot.width}x${shot.height}` });
+    const shot = await getSession(params.id).elementScreenshot(params.key, { scale: num(url.searchParams.get('scale'), 1, 0.1, 4), ...readyQueryFrom(url.searchParams) });
+    sendBytes(res, 200, 'image/png', shot.png, shotHeaders(shot));
   });
 
   // ---- VM inspection (the plugin queries) --------------------------------------------------------------------------------------------------------------------------
@@ -245,7 +253,7 @@ export function summary(session) {
   const views = session.bundle.flattenViews(s).filter(v => v.bounds).map(v => ({ id: v.id, parentId: v.parentId, depth: v.depth, type: v.type, kind: v.kind, text: v.text, contentDescription: v.contentDescription, androidId: v.androidId, visible: v.visible, clickable: v.clickable, compose: v.compose, bounds: v.bounds, window: v.window }));
   return { seq: session.snapshotSeq, activity: s.activityName ?? null, closed: !!s.closed, canGoBack: !!s.canGoBack, navigation: s.navigation ?? null, systemBars: s.systemBars ?? null, contentOffset: offset,
     views, composeSemantics: s.composeSemantics ?? null, deepLink: s.deepLink ?? null, droppedEvent: s.droppedEvent ?? null, droppedComposeAction: s.droppedComposeAction ?? null,
-    pendingEventDelay: s.pendingEventDelay ?? null, vmHealth: s.vmHealth ? { liveObjects: s.vmHealth.liveObjects, limit: s.vmHealth.limit, collections: s.vmHealth.collections, oomCount: s.vmHealth.oomCount, lastEventMs: s.vmHealth.lastEventMs } : null,
+    pendingEventDelay: s.pendingEventDelay ?? null, screenReady: screenReadyOut(s), vmHealth: s.vmHealth ? { liveObjects: s.vmHealth.liveObjects, limit: s.vmHealth.limit, collections: s.vmHealth.collections, oomCount: s.vmHealth.oomCount, lastEventMs: s.vmHealth.lastEventMs } : null,
     debugging: { methodOverrides: s.methodOverrides ?? [], endpointMocks: s.endpointMocks ?? [], hostMap: s.hostMap ?? [], ignoredActivities: s.ignoredActivities ?? [] } };
 }
 

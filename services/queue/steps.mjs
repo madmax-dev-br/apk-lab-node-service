@@ -2,17 +2,21 @@
 import { HttpError, badRequest } from '../../lib/http.mjs';
 
 export const MAX_STEPS = 200;
+export const RELOAD_MODES = ['recreate', 'reopen'];
+const READY_TIMEOUT_MS = 15000;
 const SELECTOR_KEYS = ['key', 'testTag', 'text', 'textContains', 'contentDescription', 'androidId', 'viewId', 'kind', 'clickable', 'index'];
 const STEP_FIELDS = {
   launch: ['activity'],
   intent: ['intent'],
-  wait: ['selector', 'timeoutMs', 'gone'],
+  wait: ['selector', 'timeoutMs', 'gone', 'ready'],
+  waitReady: [],
+  reload: ['mode'],
   tap: ['selector', 'x', 'y', 'longPress'],
   type: ['selector', 'text', 'append'],
   scroll: ['selector', 'x', 'y', 'dx', 'dy'],
   back: [],
   sleep: ['ms'],
-  screenshot: ['name', 'scale', 'selector', 'key', 'systemBars'],
+  screenshot: ['name', 'scale', 'selector', 'key', 'systemBars', 'waitReady'],
   layoutBounds: ['names', 'name'],
   snapshot: [],
   elements: ['selector'],
@@ -47,7 +51,11 @@ export function validateSteps(steps, { pluginsAllowed = true } = {}) {
     const unknown = Object.keys(step).filter(key => !COMMON.includes(key) && !STEP_FIELDS[step.type].includes(key)); if (unknown.length) throw badRequest(`${where} (${step.type}): unknown keys ${unknown.join(', ')}`);
     if (step.name !== undefined) { if (typeof step.name !== 'string' || !/^[\w.-]{1,64}$/.test(step.name) || names.has(step.name)) throw badRequest(`${where}.name must be unique, 1-64 of [A-Za-z0-9_.-]`); names.add(step.name); }
     if (step.selector !== undefined) checkSelector(step.selector, where);
-    if (['wait', 'type'].includes(step.type) && !step.selector) throw badRequest(`${where} (${step.type}) needs a selector`);
+    if (step.ready !== undefined && typeof step.ready !== 'boolean') throw badRequest(`${where}.ready must be a boolean`);
+    if (step.waitReady !== undefined && typeof step.waitReady !== 'boolean') throw badRequest(`${where}.waitReady must be a boolean`);
+    if (step.type === 'wait' && !step.selector && step.ready !== true) throw badRequest(`${where} (wait) needs a selector, ready: true, or both`);
+    if (step.type === 'type' && !step.selector) throw badRequest(`${where} (type) needs a selector`);
+    if (step.type === 'reload' && step.mode !== undefined && !RELOAD_MODES.includes(step.mode)) throw badRequest(`${where} (reload): mode must be ${RELOAD_MODES.map(m => `"${m}"`).join(' or ')}`);
     if (step.type === 'tap' && !step.selector && !(Number.isFinite(step.x) && Number.isFinite(step.y))) throw badRequest(`${where} (tap) needs a selector or x/y`);
     if (step.type === 'type' && typeof step.text !== 'string') throw badRequest(`${where} (type) needs text`);
     if (step.type === 'sleep' && !(Number.isFinite(step.ms) && step.ms >= 0 && step.ms <= 60000)) throw badRequest(`${where} (sleep) needs ms between 0 and 60000`);
@@ -78,22 +86,27 @@ export async function runStep(step, { runner, sessionId, signal, index }) {
   switch (step.type) {
     case 'launch': { const r = await call('POST', '/launch', pick(step, ['activity'])); return { output: { activity: r.snapshot?.activity ?? null, launchMs: r.launchMs } }; }
     case 'intent': { const r = await call('POST', '/intent', step.intent); return { output: { deepLink: r.deepLink, activity: r.snapshot?.activity ?? null } }; }
-    case 'wait': { const r = await call('POST', '/wait', { selector: step.selector, timeoutMs: step.timeoutMs ?? 10000, gone: step.gone === true }); return { output: r }; }
+    case 'wait': { const r = await call('POST', '/wait', { ...(step.selector ? { selector: step.selector } : {}), timeoutMs: step.timeoutMs ?? (step.selector ? 10000 : READY_TIMEOUT_MS), gone: step.gone === true, ready: step.ready === true }); return { output: r }; }
+    case 'waitReady': { const r = await call('POST', '/wait', { ready: true, timeoutMs: step.timeoutMs ?? READY_TIMEOUT_MS }); return { output: { waitedMs: r.waitedMs, activity: r.activity, ready: r.ready, screenReady: r.screenReady } }; }
+    case 'reload': { const mode = step.mode ?? 'recreate', r = await call('POST', '/reload', { mode }); return { output: { mode, activity: r.snapshot?.activity ?? null, ready: r.snapshot?.screenReady?.ready ?? null } }; }
     case 'tap': { const r = await call('POST', '/tap', pick(step, ['selector', 'x', 'y', 'longPress'])); return { output: { via: r.via, element: r.element ? { key: r.element.key, name: r.element.name } : null, activity: r.snapshot?.activity ?? null } }; }
     case 'type': { const r = await call('POST', '/type', pick(step, ['selector', 'text', 'append'])); return { output: { via: r.via, element: r.element ? { key: r.element.key, name: r.element.name } : null } }; }
     case 'scroll': { const r = await call('POST', '/scroll', pick(step, ['selector', 'x', 'y', 'dx', 'dy'])); return { output: { via: r.via } }; }
     case 'back': { const r = await call('POST', '/back'); return { output: { activity: r.snapshot?.activity ?? null, closed: r.snapshot?.closed ?? null } }; }
     case 'sleep': await sleep(step.ms, signal); return { output: { sleptMs: step.ms } };
     case 'screenshot': {
-      let path = `/screenshot.png?scale=${encodeURIComponent(step.scale ?? 1)}&systemBars=${step.systemBars === false ? 0 : 1}`;
+      // waitReady: the runner waits for "Tela pronta" before painting (and, for a selector, before the element is looked up)
+      const readyTimeoutMs = step.timeoutMs ?? READY_TIMEOUT_MS, ready = step.waitReady === true ? `&waitReady=1&readyTimeoutMs=${readyTimeoutMs}` : '';
+      if (ready && step.selector && !step.key) await call('POST', '/wait', { ready: true, timeoutMs: readyTimeoutMs });
+      let path = `/screenshot.png?scale=${encodeURIComponent(step.scale ?? 1)}&systemBars=${step.systemBars === false ? 0 : 1}${ready}`;
       if (step.key || step.selector) {
         const key = step.key ?? (await call('GET', `/elements?${new URLSearchParams(Object.entries(step.selector).map(([k, v]) => [k, String(v)]))}`)).elements?.[step.selector.index ?? 0]?.key;
         if (!key) throw new HttpError(404, 'element-not-found', `screenshot: no element matches ${JSON.stringify(step.selector)}`);
-        path = `/elements/${encodeURIComponent(key)}/screenshot.png?scale=${encodeURIComponent(step.scale ?? 1)}`;
+        path = `/elements/${encodeURIComponent(key)}/screenshot.png?scale=${encodeURIComponent(step.scale ?? 1)}${ready}`;
       }
-      const shot = await runner.sessionBytes(sessionId, path, { signal });
+      const shot = await runner.sessionBytes(sessionId, path, { signal, timeoutMs: Math.max(60000, readyTimeoutMs + 15000) });
       const name = `${label}.png`;
-      return { output: { artifact: name, bytes: shot.bytes.length, notes: shot.notes ? JSON.parse(shot.notes) : null }, artifacts: [{ name, type: 'image/png', bytes: shot.bytes }] };
+      return { output: { artifact: name, bytes: shot.bytes.length, notes: shot.notes ? JSON.parse(shot.notes) : null, ...(shot.ready ? { ready: JSON.parse(shot.ready) } : {}) }, artifacts: [{ name, type: 'image/png', bytes: shot.bytes }] };
     }
     case 'layoutBounds': { const r = await call('GET', `/layout-bounds?names=${step.names === false ? 0 : 1}`); return { output: { activity: r.activity, count: r.elements.length }, artifacts: [{ name: `${label}.layout-bounds.json`, type: 'application/json', bytes: Buffer.from(JSON.stringify(r, null, 2)) }] }; }
     case 'snapshot': { const r = await call('GET', '/snapshot'); return { output: { activity: r?.activity ?? null }, artifacts: [{ name: `${label}.snapshot.json`, type: 'application/json', bytes: Buffer.from(JSON.stringify(r, null, 2)) }] }; }

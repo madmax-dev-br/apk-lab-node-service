@@ -24,13 +24,14 @@
     <li><a href="#inicio-rapido">Início rápido</a><ol><li><a href="#variaveis">Variáveis de ambiente</a></li><li><a href="#docker">Docker Compose</a></li></ol></li>
     <li><a href="#autenticacao">Autenticação</a></li>
     <li><a href="#config">Configuração da sessão</a><ol><li><a href="#mock-schema">Formato do mock</a></li><li><a href="#seletores">Seletores</a></li></ol></li>
-    <li><a href="#api-runner">API do runner</a></li>
+    <li><a href="#api-runner">API do runner</a><ol><li><a href="#tela-pronta">Tela pronta</a></li></ol></li>
     <li><a href="#api-fila">API da fila</a><ol><li><a href="#passos">Passos de um job</a></li></ol></li>
     <li><a href="#receitas">Receitas</a><ol>
       <li><a href="#r1">1. Mock de endpoint</a></li><li><a href="#r2">2. Mock por padrão, erro e atraso</a></li><li><a href="#r3">3. Redirecionar host</a></li><li><a href="#r4">4. Allow list e offline</a></li>
       <li><a href="#r5">5. Permissões e localização</a></li><li><a href="#r6">6. Retorno de método</a></li><li><a href="#r7">7. Ignorar Activity</a></li><li><a href="#r8">8. Dispositivo ao vivo</a></li>
       <li><a href="#r9">9. Deep link</a></li><li><a href="#r10">10. Job na fila</a></li><li><a href="#r11">11. Lease interativo</a></li><li><a href="#r12">12. Logcat e rede (SSE)</a></li>
-      <li><a href="#r13">13. Plugin no servidor</a></li><li><a href="#r14">14. Captura de um elemento</a></li><li><a href="#r15">15. CORS</a></li></ol></li>
+      <li><a href="#r13">13. Plugin no servidor</a></li><li><a href="#r14">14. Captura de um elemento</a></li><li><a href="#r15">15. CORS</a></li>
+      <li><a href="#r16">16. Recarregar a tela</a></li><li><a href="#r17">17. Esperar a tela pronta e tirar o print</a></li></ol></li>
     <li><a href="#seguranca">Segurança</a></li>
     <li><a href="#cors">CORS</a></li>
     <li><a href="#limitacoes">Limitações</a></li>
@@ -46,7 +47,8 @@
     <p style="margin-top:0"><strong>O que dá para fazer pela API</strong>, com o mesmo código da VM que roda no site:</p>
     <ul>
       <li>criar uma sessão com o APK e a configuração já aplicada antes do app iniciar: dispositivo, rede (allow list, redirecionar hosts, offline), <strong>mocks de endpoints</strong>, permissões e localização, retornos de métodos, Activities ignoradas, tempo máximo por evento, memória, APIs ausentes, dados do app;</li>
-      <li>interagir: iniciar, abrir intent/deep link, tocar por coordenada ou por seletor (testTag, texto, chave do elemento), digitar, rolar, voltar, esperar um texto aparecer;</li>
+      <li>interagir: iniciar, abrir intent/deep link, tocar por coordenada ou por seletor (testTag, texto, chave do elemento), digitar, rolar, voltar, esperar um texto aparecer, <strong>recriar ou reabrir</strong> a Activity atual;</li>
+      <li>saber quando a tela está <strong>pronta</strong> ("Tela pronta": a Activity e os fragments carregados e a tela parada) e só então ler ou capturar;</li>
       <li>ler a tela: snapshot, árvore Compose, <strong>limites de layout</strong> com nomes, captura PNG da tela inteira ou de um elemento, ViewModels, fragments, inspeção de campos;</li>
       <li>acompanhar: logcat e log de rede paginados ou por SSE, eventos da sessão, Resumo de diagnóstico;</li>
       <li>rodar <strong>plugins</strong> no servidor com a mesma API <code>lab</code> do site (desligados por padrão);</li>
@@ -216,10 +218,10 @@ curl -s http://127.0.0.1:8080/health</code></pre>
 
   <h3>Serviço</h3>
   <div class="endpoint"><span class="method get">GET</span><code>/health</code><span>público</span></div>
-  <pre><code>{ "ok": true, "service": "apk-lab-runner", "version": "0.1.0", "runtimeRevision": "93d82df0437e", "pluginsAllowed": false,
+  <pre><code>{ "ok": true, "service": "apk-lab-runner", "version": "0.1.0", "runtimeRevision": "c6940189447d", "pluginsAllowed": false,
   "maxSessions": 2, "activeSessions": 1, "reserved": 0, "available": 1, "freeMemoryMb": 5120, "memoryOk": true }</code></pre>
   <div class="endpoint"><span class="method get">GET</span><code>/stats</code></div><p>Capacidade, sessões, memória do processo e o cache de rasters.</p>
-  <div class="endpoint"><span class="method get">GET</span><code>/plugin-templates</code></div><p>Os modelos de plugin do site (<code>{ id, name, description, code }</code>).</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/plugin-templates</code></div><p>Os modelos de plugin do site e os deste serviço, como "Print na tela pronta" (<code>{ id, name, description, code }</code>).</p>
 
   <h3>Sessões</h3>
   <div class="endpoint"><span class="method post">POST</span><code>/sessions</code><span>201</span></div>
@@ -253,12 +255,19 @@ curl -s http://127.0.0.1:8080/health</code></pre>
   "type": null, "extras": { "origem": "api", "id": 42, "novo": true }, "component": null }
 → { "deepLink": { "ok": true, "activity": "...", "filter": {...}, "alternatives": [], "launched": false }, "snapshot": { ... } }</code></pre>
   <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/back</code></div>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/reload</code></div><pre><code>{ "mode": "recreate" }    // padrão; ou "reopen"
+→ { "mode": "recreate", "snapshot": { "activity": "...", "screenReady": { "ready": false, ... }, ... } }</code></pre>
+  <p>Os botões "Recriar" e "Reabrir" do site. <code>recreate</code> = <code>Activity.recreate()</code>: a mesma Activity passa por <code>onSaveInstanceState</code> → <code>onDestroy</code> → uma nova instância com o estado salvo; ViewModels retidos (e o <code>SavedStateHandle</code>) continuam os mesmos, como numa rotação. <code>reopen</code> = uma instância nova com o mesmo Intent no lugar da atual, sem estado salvo e com o <code>ViewModelStore</code> limpo: o conteúdo carrega de novo (requisições, leitura de dados). 400 para outro modo.</p>
   <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/tap</code></div><pre><code>{ "selector": { "testTag": "entrar" } }       // ou { "key": "c:7544:77" } ou { "x": 205, "y": 380 }; "longPress": true
 → { "via": "semantics" | "click" | "pointer", "element": { ... }, "snapshot": { ... } }</code></pre>
   <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/type</code></div><pre><code>{ "selector": { "testTag": "email" }, "text": "maria@exemplo.com", "append": false }</code></pre>
   <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/scroll</code></div><pre><code>{ "selector": { "testTag": "lista" }, "dx": 0, "dy": 600 }   // ou { "x": 200, "y": 500, "dy": 600 } (roda do mouse num Compose)</code></pre>
   <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/wait</code></div><pre><code>{ "selector": { "text": "Bem-vinda" }, "timeoutMs": 10000, "gone": false }
-→ 200 { "element": { ... }, "waitedMs": 420, "activity": "..." }    |   408 { "error": { "code": "wait-timeout", ... } }</code></pre>
+{ "ready": true, "timeoutMs": 15000 }                                  // só "Tela pronta"
+{ "selector": { "text": "Bem-vinda" }, "ready": true }                   // o texto E a tela pronta
+→ 200 { "element": { ... } | null, "waitedMs": 420, "activity": "...", "ready": true, "screenReady": { ... } }
+→ 408 { "error": { "code": "wait-timeout" | "ready-timeout", "message": "... (waiting for: quadro pendente ...)", "details": { "waitingFor": [ ... ], "screenReady": { ... } } } }</code></pre>
+  <p>Precisa de um seletor, de <code>"ready": true</code> ou dos dois. Sem seletor, o tempo padrão é 15 s.</p>
   <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/input</code></div>
   <p>Entrada crua do protocolo do Worker, com ids tirados de um snapshot: <code>{ "type": "click", "id": 6158 }</code>, <code>input</code> (<code>id</code>, <code>text</code>), <code>check</code> (<code>id</code>, <code>checked</code>), <code>focus</code>, <code>press</code>, <code>scroll</code> (<code>id</code>, <code>x</code>, <code>y</code>), <code>scrollby</code> (<code>id</code>, <code>dx</code>, <code>dy</code>), <code>compose-action</code> (<code>ownerViewId</code>, <code>nodeId</code>, <code>action</code>, <code>args</code>), <code>pointer</code> (<code>ownerViewId</code>, <code>action</code> 0 down / 1 up / 2 move / 3 cancel / 8 roda, <code>x</code>, <code>y</code>, <code>t</code>, <code>dx</code>, <code>dy</code>).</p>
 
@@ -272,9 +281,17 @@ curl -s http://127.0.0.1:8080/health</code></pre>
     "texts": ["Buscar"], "editableText": "", "role": null, "testTag": "search", "actions": ["OnClick", "SetText", ...], "clickable": true, ... } ] }</code></pre>
   <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/elements?testTag=…&amp;text=…&amp;textContains=…</code></div><p>Busca por seletor (sem parâmetros: todos os elementos).</p>
   <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/compose-tree?maxNodes=2000</code></div><p>A árvore de layout do Compose (a mesma inspeção do painel "Compose").</p>
-  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/screenshot.png?scale=1&amp;systemBars=1</code></div>
-  <p>PNG da tela inteira (411×914 em escala 1 no perfil padrão). Cabeçalhos <code>X-Image-Size</code> e <code>X-Screenshot-Notes</code> (quantos rasters, textos de View aproximados).</p>
-  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/elements/:key/screenshot.png?scale=1</code></div><p>PNG só das caixas de um elemento de <code>/layout-bounds</code>.</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/screenshot.png?scale=1&amp;systemBars=1&amp;waitReady=1&amp;readyTimeoutMs=15000</code></div>
+  <p>PNG da tela inteira (411×914 em escala 1 no perfil padrão). Cabeçalhos <code>X-Image-Size</code> e <code>X-Screenshot-Notes</code> (quantos rasters, textos de View aproximados). Com <code>waitReady=1</code>, espera a "Tela pronta" antes de desenhar (408 <code>ready-timeout</code> com os motivos) e responde também <code>X-Screen-Ready: {"ready":true,"waitedMs":308,"activity":"..."}</code>.</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/elements/:key/screenshot.png?scale=1&amp;waitReady=1</code></div><p>PNG só das caixas de um elemento de <code>/layout-bounds</code> (mesmas opções de espera).</p>
+  <h3 id="tela-pronta">Tela pronta</h3>
+  <p>Todo snapshot que o Worker publica traz <code>screenReady</code>: a tela fica <strong>pronta</strong> quando a Activity do topo está em <code>onResume</code> com o primeiro quadro desenhado, todo fragment androidx visível está <code>RESUMED</code>, e não há quadro pendente (animação, transição, recomposição), passada de layout pendente numa janela anexada, mensagem da thread principal para agora nem troca de rede em andamento (mocks não contam) — e isso durante 300 ms seguidos. Quando o período de calma termina o Worker acorda e publica um snapshot com a virada, mesmo sem outra entrada. Uma tela que anima para sempre (um spinner, o cursor piscando de um campo focado) nunca fica pronta; <code>waitingFor</code> diz por quê.</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/ready</code></div>
+  <pre><code>{ "ready": true, "current": true, "state": "running", "busyWith": null, "activity": "dev.exemplo.app.MainActivity", "seq": 5, "snapshotAgeMs": 76,
+  "screenReady": { "ready": true, "activity": "dev.exemplo.app.MainActivity", "readySince": 1794231175557, "settledForMs": 348, "quietMs": 300,
+    "waitingFor": [], "fragments": [ { "className": "dev.exemplo.app.ListaFragment", "state": 7, "hidden": false, "ready": true } ] } }</code></pre>
+  <p><code>screenReady</code> é o do último snapshot; <code>current</code> diz se ele descreve a tela agora (falso enquanto uma operação roda, antes da primeira tela ou com a VM parada) e <code>ready</code> = <code>current</code> e <code>screenReady.ready</code>. Enquanto não está pronta, <code>waitingFor</code> traz os motivos em português, por exemplo <code>"a Activity ainda não chegou a onResume"</code>, <code>"um fragment ainda carregando (ListaFragment)"</code>, <code>"quadro pendente (animação, transição ou recomposição)"</code>, <code>"uma requisição de rede em andamento"</code>, <code>"tela parada há 120 ms (pronta após 300 ms)"</code>. O resumo de tela das operações também traz <code>snapshot.screenReady</code>.</p>
+  <p>Formas de esperar: <code>POST /wait { "ready": true }</code> (sozinho ou com um seletor), <code>?waitReady=1</code> nas capturas, o evento SSE <code>ready</code> em <code>/events</code>, os passos <code>waitReady</code> / <code>wait</code> com <code>ready</code> / <code>screenshot</code> com <code>waitReady</code> na fila e, nos plugins, <code>lab.waitReady()</code> e <code>lab.on('ready', fn)</code>.</p>
   <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/screen-state</code></div><p>O texto de "Copiar estado da tela".</p>
   <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/diagnostic</code></div><p>Resumo de diagnóstico: estado da tela, último erro com o Resumo da VM, erros em callbacks, estimativa de APIs ausentes, saúde da VM, stubs tolerados, contadores de mocks/redirecionamentos/retornos/Activities ignoradas, dados do app, permissões.</p>
 
@@ -297,7 +314,7 @@ POST /sessions/:id/field    { "handle": "h6755.j0l26s", "path": "pedidos.value.0
   <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/logcat/stream</code></div><p>SSE: <code>event: log</code> por linha (o <code>id</code> do evento é o <code>seq</code>).</p>
   <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/network?since=-1&amp;limit=200</code> · <code>/network/stream</code></div>
   <p>Cada troca HTTP, consulta DNS ou conexão: <code>{ seq, method, url, host, status, outcome ("response", "refused-by-allowlist", "offline", "timeout", ...), durationMs, requestHeaders, responseHeaders, requestBytes, responseBytes, mockId, mockLabel, mappedUrl, mappedRule, refusedHost, failure }</code>. Corpos nunca são registrados. No stream: <code>event: request</code> (novas e atualizadas).</p>
-  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/events</code></div><p>SSE: <code>session</code>, <code>snapshot</code>, <code>loaded</code>, <code>runtime-error</code>, <code>permission-request</code>, <code>permission-config</code>, <code>app-data</code>, <code>plugin</code>, <code>crashed</code>, <code>closed</code>.</p>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/events</code></div><p>SSE: <code>session</code>, <code>snapshot</code> (com <code>ready</code>), <code>ready</code>, <code>loaded</code>, <code>runtime-error</code>, <code>permission-request</code>, <code>permission-config</code>, <code>app-data</code>, <code>plugin</code>, <code>crashed</code>, <code>closed</code>. O evento <code>ready</code> sai a cada virada da "Tela pronta" (para <code>true</code> ou para <code>false</code>) com <code>{ seq, ready, activity, readySince, waitingFor, fragments, ... }</code>.</p>
 
   <h3>Permissões e dados do app</h3>
   <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/permission-requests</code></div><p>Com <code>permissions.dialogs: "manual"</code>, os diálogos pendentes de <code>requestPermissions</code> e a configuração atual.</p>
@@ -309,6 +326,13 @@ POST /sessions/:id/field    { "handle": "h6755.j0l26s", "path": "pedidos.value.0
   <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/plugins</code> · <code>/plugins/:pid</code> · <code>/plugins/stream</code></div>
   <p>Saída de cada plugin: <code>{ id, status ("rodando", "parado", "erro"), badge, blocks: [ text | kv | table | json | image ], console, errors, stats }</code>. Blocos de imagem trazem <code>path</code> (<code>GET /sessions/:id/&lt;path&gt;</code> devolve o PNG) ou, com <code>?images=inline</code>, <code>dataBase64</code>.</p>
   <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/plugins/:pid/stop</code> · <code>/restart</code></div>
+  <p>Os plugins usam o runtime de plugins do próprio bundle, então a API <code>lab</code> é a do site, inclusive a "Tela pronta":</p>
+  <ul>
+    <li><code>screen.ready</code> (no evento <code>'screen'</code> e em <code>await lab.screen()</code>): <code>{ ready, activity, readySince, waitingFor, fragments: [{ className, state, hidden, ready }] }</code>, ou <code>null</code> sem tela; a virada para pronta conta como mudança de tela;</li>
+    <li><code>lab.on('ready', fn)</code>: chama <code>fn(screen)</code> cada vez que a tela <em>fica</em> pronta (uma Activity nova, um Recriar/Reabrir, uma navegação que assenta; também logo ao assinar, se já estiver pronta); <code>lab.off('ready', fn)</code> cancela;</li>
+    <li><code>await lab.waitReady({ timeoutMs = 15000 })</code>: resolve com a tela quando estiver pronta; rejeita com <code>code: 'timeout'</code> e a mensagem "A tela não ficou pronta: &lt;motivos&gt;".</li>
+  </ul>
+  <p>O modelo "Print na tela pronta" (<code>GET /plugin-templates</code>) tira um print da tela inteira a cada vez que ela fica pronta.</p>
 </section>
 
 <section id="api-fila">
@@ -343,12 +367,14 @@ POST /sessions/:id/field    { "handle": "h6755.j0l26s", "path": "pedidos.value.0
     <tr><th>type</th><th>Campos</th><th>Resultado</th></tr>
     <tr><td><code>launch</code></td><td><code>activity?</code></td><td>Activity, launchMs</td></tr>
     <tr><td><code>intent</code></td><td><code>intent</code> (como em <code>/intent</code>)</td><td>deepLink</td></tr>
-    <tr><td><code>wait</code></td><td><code>selector</code>, <code>timeoutMs?</code>, <code>gone?</code></td><td>elemento</td></tr>
+    <tr><td><code>wait</code></td><td><code>selector</code> e/ou <code>ready: true</code>, <code>timeoutMs?</code>, <code>gone?</code></td><td>elemento, screenReady</td></tr>
+    <tr><td><code>waitReady</code></td><td><code>timeoutMs?</code> (padrão 15000)</td><td>waitedMs, screenReady</td></tr>
+    <tr><td><code>reload</code></td><td><code>mode?</code>: <code>"recreate"</code> (padrão) ou <code>"reopen"</code></td><td>mode, Activity, ready</td></tr>
     <tr><td><code>tap</code></td><td><code>selector</code> ou <code>x</code>/<code>y</code>, <code>longPress?</code></td><td>via, elemento</td></tr>
     <tr><td><code>type</code></td><td><code>selector</code>, <code>text</code>, <code>append?</code></td><td>via</td></tr>
     <tr><td><code>scroll</code></td><td><code>selector</code> ou <code>x</code>/<code>y</code>, <code>dx</code>, <code>dy</code></td><td>via</td></tr>
     <tr><td><code>back</code>, <code>sleep</code></td><td>—, <code>ms</code> (até 60000)</td><td></td></tr>
-    <tr><td><code>screenshot</code></td><td><code>name?</code>, <code>scale?</code>, <code>systemBars?</code>, <code>selector?</code>/<code>key?</code> (um elemento)</td><td>artefato PNG</td></tr>
+    <tr><td><code>screenshot</code></td><td><code>name?</code>, <code>scale?</code>, <code>systemBars?</code>, <code>selector?</code>/<code>key?</code> (um elemento), <code>waitReady?</code> (espera a "Tela pronta"; <code>timeoutMs</code> vale para a espera)</td><td>artefato PNG</td></tr>
     <tr><td><code>layoutBounds</code>, <code>snapshot</code>, <code>composeTree</code>, <code>diagnostic</code></td><td><code>names?</code>, <code>maxNodes?</code></td><td>artefato JSON</td></tr>
     <tr><td><code>elements</code>, <code>viewModels</code>, <code>screenState</code></td><td><code>selector?</code></td><td>saída inline</td></tr>
     <tr><td><code>viewModelField</code></td><td><code>viewModel</code> (classe ou sufixo), <code>path</code></td><td>valor do campo</td></tr>
@@ -596,6 +622,80 @@ const form = new FormData(); form.append('apk', arquivo); form.append('config', 
 const { session } = await (await fetch('https://runner.exemplo.com/sessions', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form })).json();
 const png = await (await fetch(`https://runner.exemplo.com/sessions/${session.id}/screenshot.png`, { headers: { Authorization: `Bearer ${token}` } })).blob();
 const logs = new EventSource(`https://runner.exemplo.com/sessions/${session.id}/logcat/stream?access_token=${token}`);</code></pre>
+
+  <h3 id="r16">16. Recarregar a tela</h3>
+  <p>Dois jeitos de recarregar a Activity atual, como os botões "Recriar" e "Reabrir" do site:</p>
+  <ul>
+    <li><strong><code>recreate</code></strong> (padrão) — <code>Activity.recreate()</code>, o que o Android faz numa rotação ou troca de tema: estado salvo e ViewModels retidos ficam. Use para testar se a tela sobrevive a uma mudança de configuração (o texto digitado volta? a lista não é buscada de novo?).</li>
+    <li><strong><code>reopen</code></strong> — uma instância nova com o mesmo Intent, sem estado salvo e com o <code>ViewModelStore</code> limpo: o conteúdo carrega de novo. Use para buscar os dados outra vez depois de trocar um mock (<code>PATCH /config</code>), ou para voltar a tela ao estado inicial sem reiniciar o app inteiro (<code>/restart</code> recarrega o APK).</li>
+  </ul>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -s -H "Authorization: Bearer $RUNNER_TOKEN" $RUNNER/sessions/$SESSION/view-models     # anote o handle do ViewModel do app
+curl -s -X POST -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' -d '{"mode":"recreate"}' $RUNNER/sessions/$SESSION/reload
+curl -s -H "Authorization: Bearer $RUNNER_TOKEN" $RUNNER/sessions/$SESSION/view-models     # mesmo handle: o ViewModel foi mantido
+# troca o mock e busca os dados de novo numa instância nova
+curl -s -X PATCH -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' \
+  -d '{"endpointMocks":[{"method":"GET","url":"/v1/pedidos","body":"[]"}]}' $RUNNER/sessions/$SESSION/config
+curl -s -X POST -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' -d '{"mode":"reopen"}' $RUNNER/sessions/$SESSION/reload
+curl -s -X POST -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' -d '{"ready":true}' $RUNNER/sessions/$SESSION/wait</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const antes = (await session.viewModels()).find(m => !m.library);
+await session.reload('recreate');
+const depois = (await session.viewModels()).find(m => !m.library);
+console.log(depois.handle === antes.handle);          // true: o ViewModel retido sobreviveu
+await session.updateConfig({ endpointMocks: [{ method: 'GET', url: '/v1/pedidos', body: '[]' }] });
+await session.reload('reopen');                        // instância nova: o conteúdo carrega de novo
+console.log((await session.viewModels()).find(m => !m.library).handle === antes.handle);   // false
+await session.waitReady();</code></pre></div>
+  </div>
+  <p>Na fila: <code>{ "type": "reload", "mode": "reopen" }</code>. Depois de recarregar, a tela volta a "não pronta" até assentar: espere com <code>waitReady</code> antes de capturar.</p>
+
+  <h3 id="r17">17. Esperar a tela ficar pronta e tirar o print</h3>
+  <p>Cria a sessão com um mock, inicia, espera a "Tela pronta" (o mock responde sem rede, então a tela assenta assim que o conteúdo é desenhado) e captura. A mesma coisa como job na fila logo abaixo.</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>SESSION=$(curl -s -H "Authorization: Bearer $RUNNER_TOKEN" -F apk=@app.apk \
+  -F 'config={"endpointMocks":[{"method":"GET","url":"/v1/perfil","status":200,"headers":[{"name":"Content-Type","value":"application/json"}],"body":"{\"nome\":\"Maria\"}"}]}' \
+  $RUNNER/sessions | node -pe 'JSON.parse(require("fs").readFileSync(0)).session.id')
+curl -s -X POST -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' -d '{}' $RUNNER/sessions/$SESSION/launch
+curl -s -X POST -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' -d '{"ready":true,"timeoutMs":15000}' $RUNNER/sessions/$SESSION/wait
+curl -s -H "Authorization: Bearer $RUNNER_TOKEN" $RUNNER/sessions/$SESSION/ready          # { "ready": true, "current": true, ... }
+curl -s -H "Authorization: Bearer $RUNNER_TOKEN" -D - -o pronta.png "$RUNNER/sessions/$SESSION/screenshot.png?waitReady=1&amp;readyTimeoutMs=15000"
+# ou acompanhe as viradas: event: ready  data: {"ready":true,"activity":"...",...}
+curl -sN -H "Authorization: Bearer $RUNNER_TOKEN" $RUNNER/sessions/$SESSION/events</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const session = await runner.createSession(apk, { endpointMocks: [{ method: 'GET', url: '/v1/perfil', status: 200,
+  headers: [{ name: 'Content-Type', value: 'application/json' }], body: '{"nome":"Maria"}' }] });
+const stop = session.streamReady(e => console.log('pronta?', e.ready, e.waitingFor));
+await session.launch();
+try { await session.waitReady({ timeoutMs: 15000 }); }
+catch (error) { if (error.code === 'ready-timeout') console.log('ainda esperando:', error.details.waitingFor); throw error; }
+await writeFile('pronta.png', await session.screenshot({ waitReady: true }));
+stop.stop(); await session.close();</code></pre></div>
+  </div>
+  <p>Como job na fila:</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>cat > job.json &lt;&lt;'EOF'
+{ "config": { "endpointMocks": [ { "method": "GET", "url": "/v1/perfil", "body": "{\"nome\":\"Maria\"}" } ] },
+  "steps": [
+    { "type": "launch" },
+    { "type": "waitReady", "timeoutMs": 15000 },
+    { "type": "screenshot", "name": "pronta", "waitReady": true },
+    { "type": "reload", "mode": "reopen" },
+    { "type": "wait", "ready": true, "selector": { "textContains": "Maria" } },
+    { "type": "screenshot", "name": "reaberta", "waitReady": true } ] }
+EOF
+JOB=$(curl -s -H "Authorization: Bearer $QUEUE_TOKEN" -F apk=@app.apk -F 'job=&lt;job.json' $QUEUE/jobs | node -pe 'JSON.parse(require("fs").readFileSync(0)).id')
+curl -s -H "Authorization: Bearer $QUEUE_TOKEN" -o pronta.png $QUEUE/jobs/$JOB/artifacts/pronta.png</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const job = await queue.submitJob(apk, { config: { endpointMocks: [{ method: 'GET', url: '/v1/perfil', body: '{"nome":"Maria"}' }] }, steps: [
+  { type: 'launch' },
+  { type: 'waitReady', timeoutMs: 15000 },
+  { type: 'screenshot', name: 'pronta', waitReady: true },
+  { type: 'reload', mode: 'reopen' },
+  { type: 'wait', ready: true, selector: { textContains: 'Maria' } },
+  { type: 'screenshot', name: 'reaberta', waitReady: true },
+] });
+const done = await queue.waitJob(job.id);
+await writeFile('pronta.png', await queue.artifact(done, 'pronta.png'));</code></pre></div>
+  </div>
+  <p>Num plugin (precisa de <code>RUNNER_ALLOW_PLUGINS=1</code>): <code>const tela = await lab.waitReady(); lab.ui.image(await lab.screenshot(), { caption: tela.activity });</code> — ou o modelo "Print na tela pronta", que usa <code>lab.on('ready', ...)</code>.</p>
 </section>
 
 <section id="seguranca">
@@ -648,7 +748,7 @@ QUEUE_CORS_ORIGINS=https://painel.exemplo.com</code></pre>
 
 <section id="english">
   <h2>English summary</h2>
-  <p><strong>APK Lab Node Service</strong> runs real Android APKs on a Node.js server with the public <a href="https://madmax-dev-br.github.io/apk-browser-lab-site/">APK Web Lab</a> runtime (a Dalvik VM in JavaScript). The <strong>runner</strong> loads APKs into VM sessions (one <code>worker_threads</code> Worker each, running the bundle's unmodified <code>apk-worker.js</code> through its own <code>APKWorkerClient</code>) and exposes every feature of the site over REST + SSE: session config applied before the app starts (device, network allow list / host map / offline, endpoint mocks, permissions and location, method return overrides, ignored Activities, time and memory limits, app data), input (launch, intents, tap by coordinates or selector, type, scroll, back, wait for an element), screen reading (snapshot, Compose tree, layout bounds with names, server-side PNG screenshots of the screen or one element via CanvasKit), VM inspection (ViewModels, fragments, fields), logcat and network log (paged or streamed), diagnostics, and server-side plugins with the site's <code>lab</code> API (disabled by default). The <strong>queue</strong> schedules jobs (declarative steps with outputs and artifacts) and interactive leases (a proxied runner session) across runners with priorities, per-client fairness, capacity from health checks, retries, cancellation, SSE progress and retention; storage is in memory or a JSON file and can be swapped for a database.</p>
+  <p><strong>APK Lab Node Service</strong> runs real Android APKs on a Node.js server with the public <a href="https://madmax-dev-br.github.io/apk-browser-lab-site/">APK Web Lab</a> runtime (a Dalvik VM in JavaScript). The <strong>runner</strong> loads APKs into VM sessions (one <code>worker_threads</code> Worker each, running the bundle's unmodified <code>apk-worker.js</code> through its own <code>APKWorkerClient</code>) and exposes every feature of the site over REST + SSE: session config applied before the app starts (device, network allow list / host map / offline, endpoint mocks, permissions and location, method return overrides, ignored Activities, time and memory limits, app data), input (launch, intents, tap by coordinates or selector, type, scroll, back, wait for an element, reload the current Activity with <code>POST /sessions/:id/reload { mode: "recreate" | "reopen" }</code>: recreate keeps saved state and retained ViewModels, reopen starts a fresh instance with the same Intent), "screen ready" (<code>snapshot.screenReady</code>: the Activity resumed with its first frame drawn, its fragments RESUMED, nothing pending for 300 ms; <code>GET /sessions/:id/ready</code>, <code>POST /wait { ready: true }</code> alone or with a selector, <code>?waitReady=1</code> on screenshots, an SSE <code>ready</code> event on each flip, queue steps <code>reload</code> / <code>waitReady</code> / <code>screenshot { waitReady }</code>, and <code>screen.ready</code>, <code>lab.on('ready')</code>, <code>lab.waitReady()</code> in plugins plus the "Print na tela pronta" template), screen reading (snapshot, Compose tree, layout bounds with names, server-side PNG screenshots of the screen or one element via CanvasKit), VM inspection (ViewModels, fragments, fields), logcat and network log (paged or streamed), diagnostics, and server-side plugins with the site's <code>lab</code> API (disabled by default). The <strong>queue</strong> schedules jobs (declarative steps with outputs and artifacts) and interactive leases (a proxied runner session) across runners with priorities, per-client fairness, capacity from health checks, retries, cancellation, SSE progress and retention; storage is in memory or a JSON file and can be swapped for a database.</p>
   <p>Quick start: <code>npm run fetch-runtime</code> (downloads the pinned public build and checks every SHA-256), <code>RUNNER_TOKEN=… npm run start:runner</code>, <code>QUEUE_CLIENTS=id:token QUEUE_RUNNERS=http://127.0.0.1:8081 QUEUE_RUNNER_TOKEN=… npm run start:queue</code>, or <code>docker compose up --build</code>. Security: Bearer tokens everywhere, the app's network is closed unless the operator allows hosts (<code>RUNNER_ALLOWED_HOSTS</code>), plugins run user JavaScript on the server and must only be enabled for trusted users (worker_threads + node:vm are not a security boundary). CORS: the VM has no CORS on the server (requests go straight out under the session's policy); the services' own APIs answer CORS only for origins listed in <code>RUNNER_CORS_ORIGINS</code> / <code>QUEUE_CORS_ORIGINS</code>. Code: MIT; the downloaded runtime keeps its own licenses (see its <code>THIRD_PARTY.md</code>).</p>
 </section>
 <footer>APK Lab Node Service · código MIT · o runtime baixado mantém as próprias licenças · <a href="https://github.com/madmax-dev-br/apk-lab-node-service">GitHub</a></footer>
