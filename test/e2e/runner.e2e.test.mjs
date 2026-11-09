@@ -9,7 +9,7 @@ import { apkPath, apkSkip } from '../helpers/env.mjs';
 const COMPOSE = 'compose-approvals-debug.apk', NET = 'net-probe.apk', XML = 'kotlin-counter.apk', DEEPLINK = 'deeplink-probe.apk';
 const skip = apkSkip(COMPOSE, NET, XML, DEEPLINK);
 let r, helpers; const timings = {};
-before(async () => { if (skip) return; helpers = await import('../helpers/runner.mjs'); r = await helpers.startRunner({ pluginsAllowed: true, maxSessions: 3 }); });
+before(async () => { if (skip) return; helpers = await import('../helpers/runner.mjs'); r = await helpers.startRunner({ pluginsAllowed: true, maxSessions: 3, allowPrivateNetwork: true }); });   // allowPrivateNetwork: the host redirect test reaches a local server
 after(async () => { await r?.close(); if (Object.keys(timings).length) console.log(`timings ${JSON.stringify(timings)}`); });
 const apk = name => readFile(apkPath(name));
 

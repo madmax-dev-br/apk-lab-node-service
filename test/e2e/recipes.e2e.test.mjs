@@ -14,7 +14,7 @@ let r, queue, runner, queueClient, helpers;
 before(async () => {
   if (skip) return;
   helpers = await import('../helpers/runner.mjs');
-  r = await helpers.startRunner({ pluginsAllowed: true, maxSessions: 3 });
+  r = await helpers.startRunner({ pluginsAllowed: true, maxSessions: 3, allowPrivateNetwork: true });   // receitas 3 e 4 reach a local server
   runner = new RunnerClient({ url: r.base, token: r.token });
   const { createQueue, parseClients } = await import('../../services/queue/app.mjs');
   queue = await createQueue({ host: '127.0.0.1', port: 0, clients: parseClients('equipe:equipe-token-1'), authDisabled: false, corsOrigins: [], runners: [{ id: 'runner-1', url: r.base, token: r.token }], maxPerClient: 2, maxQueuedPerClient: 10, maxAttempts: 2,

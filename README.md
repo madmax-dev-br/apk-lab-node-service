@@ -29,7 +29,7 @@ Cada sessão roda o `runtime/apk-worker.js` do bundle público **sem modificaç�
 
 ## De onde vem o runtime
 
-Este repositório não contém o código do lab. `npm run fetch-runtime` baixa o build público de um **commit fixo** do repositório [`madmax-dev-br/apk-browser-lab-site`](https://github.com/madmax-dev-br/apk-browser-lab-site) (hoje a revisão `c6940189447d`, commit `771a9a38`) e confere o **SHA-256 de cada arquivo** contra `runtime.lock.json` antes de instalar em `vendor/apk-lab/` (ignorado pelo git). São ~111 MiB: `runtime/`, `framework-aosp/`, `framework-resources/`, `vendor/`, `fonts/`, `licenses/`, `THIRD_PARTY.md` e os módulos de página que os serviços importam. O site não publica APKs: os serviços rodam os APKs que você envia.
+Este repositório não contém o código do lab. `npm run fetch-runtime` baixa o build público de um **commit fixo** do repositório [`madmax-dev-br/apk-browser-lab-site`](https://github.com/madmax-dev-br/apk-browser-lab-site) (hoje a revisão `79526b6931c6`, commit `dd0067d6`) e confere o **SHA-256 de cada arquivo** contra `runtime.lock.json` antes de instalar em `vendor/apk-lab/` (ignorado pelo git). São ~111 MiB: `runtime/`, `framework-aosp/`, `framework-resources/`, `vendor/`, `fonts/`, `licenses/`, `THIRD_PARTY.md` e os módulos de página que os serviços importam. O site não publica APKs: os serviços rodam os APKs que você envia.
 
 ```sh
 npm run fetch-runtime                      # baixa e confere
@@ -65,14 +65,15 @@ Com Docker: crie um `.env` com `RUNNER_TOKEN=...` e `QUEUE_CLIENTS=equipe:...` e
 | `RUNNER_MAX_SESSIONS` | 2 | sessões simultâneas |
 | `RUNNER_MAX_APK_MB` | 200 | |
 | `RUNNER_IDLE_TIMEOUT_S`, `RUNNER_SESSION_MAX_S` | 600, 3600 | fecha sessões ociosas / antigas |
-| `RUNNER_VM_HEAP_MB`, `RUNNER_VM_HEAP_MAX_MB` | 2048, 6144 | heap V8 do Worker de cada sessão |
+| `RUNNER_VM_HEAP_MB`, `RUNNER_VM_HEAP_MAX_MB` | 2048, 6144 | heap V8 do Worker de cada sessão: 2 × orçamento Java + 1024 MB, no mínimo o primeiro e no máximo o segundo (orçamento de 1024 MiB → 3072 MB) |
 | `RUNNER_MAX_MEMORY_MIB` | 2048 | maior `config.memoryMiB` aceito |
 | `RUNNER_MIN_FREE_MB` | 0 | recusa sessões com pouca memória livre |
 | `RUNNER_LOAD_TIMEOUT_S`, `RUNNER_OPERATION_TIMEOUT_S` | 120, 45 | |
-| `RUNNER_ALLOWED_HOSTS` | (vazio = só mocks) | hosts que uma sessão pode liberar / redirecionar |
+| `RUNNER_ALLOWED_HOSTS` | `*` | teto do operador: hosts que uma sessão pode liberar / redirecionar (`none` = só mocks); também é a lista padrão das sessões |
+| `RUNNER_ALLOW_PRIVATE_NETWORK` | 0 | `1` deixa o app alcançar loopback, redes privadas e link-local (veja [Rede](#rede-aberta-sem-a-rede-interna)) |
 | `RUNNER_ALLOW_PLUGINS` | 0 | `1` habilita plugins (código do cliente no servidor) |
 | `RUNNER_PLUGIN_MAX`, `RUNNER_PLUGIN_HEAP_MB`, `RUNNER_PLUGIN_BUSY_S`, `RUNNER_PLUGIN_MAX_RUN_S`, `RUNNER_PLUGIN_MAX_CODE_KB` | 4, 64, 5, 0, 256 | limites dos plugins |
-| `RUNNER_APP_DATA_DIR` | (vazio) | persiste dados dos apps entre sessões, por `X-Client-Id` |
+| `RUNNER_APP_DATA_DIR` | `data/app-data` | dados dos apps entre sessões, por `X-Client-Id` (pasta ao lado do serviço, criada quando precisa, ignorada pelo git); `off` desliga |
 | `RUNNER_CORS_ORIGINS` | (vazio) | origens de navegador aceitas |
 | `APK_LAB_RUNTIME_DIR` | vendor/apk-lab | |
 | `RUNNER_LOG` | info | |
@@ -98,7 +99,8 @@ Referência completa com exemplos de requisição e resposta: **[documentação]
 
 | | |
 |---|---|
-| `GET /health`, `GET /stats`, `GET /plugin-templates` | capacidade, revisão do runtime, modelos de plugin (os do site e "Print na tela pronta") |
+| `GET /health`, `GET /stats`, `GET /plugin-templates` | capacidade, revisão do runtime, `memory` (orçamento de uma sessão padrão), `network` (política do operador), modelos de plugin (os do site e "Print na tela pronta") |
+| `GET /defaults` | a config que uma sessão recebe quando o cliente não diz nada (os padrões do site, com as exceções do servidor) |
 | `POST /sessions` | APK (multipart `apk`+`config`, binário + `X-APK-Config`, ou JSON `apkBase64`) → sessão carregada |
 | `GET /sessions`, `GET\|DELETE /sessions/:id`, `GET /sessions/:id/inventory` | |
 | `GET\|PATCH /sessions/:id/config`, `POST /sessions/:id/restart` | Controles ao vivo; chaves de reinício |
@@ -121,6 +123,37 @@ Referência completa com exemplos de requisição e resposta: **[documentação]
 | `POST /leases`, `GET /leases/:id`, `POST /leases/:id/extend`, `DELETE /leases/:id`, `* /leases/:id/session/<caminho>` | sessão interativa via proxy |
 
 Passos de um job: `launch`, `intent`, `wait` (`selector` e/ou `ready: true`), `waitReady`, `reload` (`mode`), `tap`, `type`, `scroll`, `back`, `sleep`, `screenshot` (`waitReady: true` espera a tela pronta), `layoutBounds`, `snapshot`, `elements`, `viewModels`, `viewModelField`, `inspect`, `field`, `composeTree`, `config`, `logcat`, `network`, `plugins`, `diagnostic`, `screenState`.
+
+### Padrões iguais ao site
+
+Uma sessão criada sem config se comporta como o site para um visitante novo (`device-settings.js` `defaultDeviceSettings()` e os Controles da página). `GET /defaults` mostra a config efetiva; a resposta de `POST /sessions` traz `config` com os padrões preenchidos.
+
+| | Site (visitante novo) | Runner | |
+|---|---|---|---|
+| Dispositivo | phone, retrato, fonte 1, `en-US`, tema claro, 24 h, fuso do host, animações 1×, bateria 80 % sem carregar, online, navegação por gestos | igual (`sanitizeSettings` do bundle) | |
+| Rede | `allowedHosts ["*"]`, sem relay, sem redirecionamentos | igual | o runner recusa alvos privados (abaixo) |
+| Memória da VM | automática: `navigator.deviceMemory` | igual: o Worker define `navigator.deviceMemory` como o Chrome nesta máquina | 8 GiB ou mais → 1024 MiB = 671.088 objetos |
+| APIs ausentes | `primitives` | `primitives` | antes era `strict` |
+| Encerrar no crash | não | não (`strictCrash: false`) | |
+| Tempo por evento | padrão (25 s) | `eventSeconds: 0` (25 s) | |
+| Logcat | sob demanda | `on-demand` | |
+| Dados do app | mantidos entre execuções | mantidos (`appData.keep: true`) em `data/app-data`, por `X-Client-Id` | `RUNNER_APP_DATA_DIR=off` desliga |
+| Resolução no movimento | progressiva, 0,5, tela nova reduzida | `rasterScale: 0.5`, `rasterNavigation: true` | valem quando `raster` é `progressive` |
+| WebView | ligado | **desligado** | exceção: não há navegador no servidor |
+| Raster | progressivo | **`full`** | exceção: uma captura nunca pega um quadro reduzido |
+| Diálogos de permissão | o usuário toca | **`dismiss`** (respondidos como fechados) | exceção: não há quem toque; `permissions.dialogs` muda |
+
+### Memória da VM
+
+Com memória "automática" (`memoryMiB: 0`), o `heapLimitFor` do lab (`runtime/memory-budget.js`) usa `navigator.deviceMemory`: orçamento = GiB × 128 MiB (entre 96 e 1024 MiB), 1600 bytes por objeto. No Node esse valor não existe e a VM caía em 262.144 objetos — um app real ficava com tela branca, 81 % do limite ocupado e coletas de segundos. O shim do Worker (`services/runner/vm-worker.mjs`) agora define `navigator.deviceMemory` como o Chrome faria nesta máquina: a RAM em GiB arredondada para baixo a uma potência de 2, entre 0,25 e 8 (num contêiner vale o limite do cgroup, se for menor). Um servidor com 8 GiB ou mais recebe 1024 MiB = **671.088 objetos**, e o heap V8 do Worker sobe para 3072 MB (limitado por `RUNNER_VM_HEAP_MAX_MB`). `GET /health` e a descrição de cada sessão trazem `memory: { budgetMiB, maxHeapObjects, source, deviceMemory, workerHeapMb }`; `config.memoryMiB` (512–4096) continua escolhendo um orçamento fixo.
+
+### Rede aberta, sem a rede interna
+
+Como no site, uma sessão alcança qualquer host (`allowedHosts ["*"]`, teto `RUNNER_ALLOWED_HOSTS="*"`). Mas o servidor não é o navegador de um visitante: "qualquer host" incluiria os serviços do próprio servidor, a rede privada e o endpoint de metadados da nuvem. Por isso toda troca HTTP da VM resolve o nome primeiro (`dns.lookup`, todos os endereços) e é **recusada** se algum endereço for loopback (127.0.0.0/8, ::1), privado (10/8, 172.16/12, 192.168/16, fc00::/7), link-local (169.254.0.0/16 — inclui 169.254.169.254 —, fe80::/10) ou não especificado (0.0.0.0/8, ::), a menos que o operador defina `RUNNER_ALLOW_PRIVATE_NETWORK=1`. Vale para a requisição direta, para cada salto de redirecionamento e para "Redirecionar hosts". O app recebe uma `java.io.IOException` que nomeia a política (`NetworkPolicyError: RUNNER_ALLOW_PRIVATE_NETWORK: ...`) e o log de rede mostra a falha. Mocks de endpoint respondem antes de qualquer rede e não passam por essa verificação. Limite conhecido: um nome cuja resposta DNS muda entre a verificação e a conexão (DNS rebinding) não é pego; isole o runner na rede também.
+
+### Resolução no movimento
+
+`raster: "progressive"` faz o Worker redesenhar em escala reduzida enquanto a tela se mexe e em densidade total quando ela para (o padrão do servidor é `"full"`). Com `progressive`, `rasterScale` (1, 0.75, 0.5, 0.35 ou 0.25; padrão 0.5) é a escala no movimento e `rasterNavigation` (padrão `true`) faz uma tela nova começar reduzida por 400 ms. Os dois valem na carga e ao vivo (`PATCH /sessions/:id/config`, pela mensagem `raster-settings` do Worker); trocar `raster` pede `POST /sessions/:id/restart`. `screenshot.png?waitReady=1` espera a tela pronta, que só chega depois do quadro em densidade total: a captura sai sempre do tamanho cheio. `GET /sessions/:id/snapshot?full=1` mostra `vmHealth.motionRaster`.
 
 ### Tela pronta
 
@@ -154,14 +187,14 @@ await session.close();
 
 - Toda a API exige token Bearer. Coloque HTTPS na frente e não exponha o runner diretamente: deixe só a fila acessível.
 - O APK é entrada não confiável: rode o runner isolado (contêiner/VM sem credenciais nem acesso à rede interna). A VM interpreta bytecode em JavaScript num Worker com limite de memória; código nativo ARM não é executado.
-- A rede do app começa fechada (só mocks). `RUNNER_ALLOWED_HOSTS` define o que uma sessão pode liberar e para onde pode redirecionar; liberar IPs internos ou `*` expõe sua rede ao app.
+- A rede do app começa aberta como no site (`allowedHosts ["*"]`), mas loopback, redes privadas e link-local (inclusive o endpoint de metadados da nuvem) são recusados depois da resolução DNS, a menos que `RUNNER_ALLOW_PRIVATE_NETWORK=1`. `RUNNER_ALLOWED_HOSTS` limita o que uma sessão pode liberar e para onde pode redirecionar (`none` = só mocks).
 - **Plugins rodam JavaScript enviado pelo cliente no servidor** e ficam desligados por padrão. Com `RUNNER_ALLOW_PLUGINS=1`, cada plugin roda num `worker_threads` com heap limitado, ambiente vazio, num contexto `node:vm` sem `process`/`require`/`import()`/`fetch`, recebendo mensagens só como JSON, e é encerrado se ficar ocupado por mais de `RUNNER_PLUGIN_BUSY_S` segundos seguidos. **Isso não é uma fronteira de segurança** — habilite só para usuários de confiança.
 - Limites em tudo: tamanho de APK e corpo, sessões, operações em espera, tempos, plugins, mocks.
 
 ## CORS
 
 - **No navegador** (o site), as requisições do app são `fetch` da página e dependem de CORS do servidor de destino (e de Private Network Access para `localhost` a partir de uma página https); o site oferece relay, mocks e redirecionamento para contornar.
-- **No runner não há CORS para a VM**: o worker de rede faz a requisição direto do Node, sujeita à política da sessão (mocks, allow list, redirecionamento, offline) e do operador. É um dos motivos para rodar no servidor.
+- **No runner não há CORS para a VM**: o worker de rede faz a requisição direto do Node, sujeita à política da sessão (mocks, allow list, redirecionamento, offline) e do operador (teto de hosts, recusa de alvos privados). É um dos motivos para rodar no servidor.
 - **A própria API** do runner e da fila responde CORS só para as origens configuradas: `RUNNER_CORS_ORIGINS=https://painel.exemplo.com,http://localhost:5173` e `QUEUE_CORS_ORIGINS=...` (padrão: nenhuma). Preflights `OPTIONS` recebem 204 com os métodos e cabeçalhos aceitos (`authorization`, `content-type`, `x-apk-config`, `x-client-id`, `last-event-id`) e `Access-Control-Allow-Private-Network` quando pedido; origens não listadas recebem 403. Streams SSE aceitam `?access_token=` porque `EventSource` não envia cabeçalhos. Detalhes e exemplos na [documentação](https://madmax-dev-br.github.io/apk-lab-node-service/#cors).
 
 ## Limitações
@@ -175,7 +208,7 @@ npm test                    # unitários; os que precisam do runtime/APKs são p
 APK_LAB_TEST_APK_DIR=/caminho/dos/apks-de-teste npm test   # ponta a ponta com os APKs sintéticos do lab
 ```
 
-Os testes não usam rede externa: o HTTP dos apps é respondido por mocks ou por servidores locais via redirecionamento. Os de ponta a ponta usam os APKs sintéticos de teste do lab (não incluídos neste repositório) e pulam quando `APK_LAB_TEST_APK_DIR` não está definido.
+Os testes não usam rede externa: o HTTP dos apps é respondido por mocks ou por servidores locais via redirecionamento (os testes que usam servidor local ligam `allowPrivateNetwork`, o equivalente de `RUNNER_ALLOW_PRIVATE_NETWORK=1`). Os de ponta a ponta usam os APKs sintéticos de teste do lab (não incluídos neste repositório) e pulam quando `APK_LAB_TEST_APK_DIR` não está definido.
 
 ## Licença
 
@@ -187,4 +220,6 @@ Código deste repositório: MIT ([LICENSE](LICENSE)). O runtime baixado não faz
 
 **APK Lab Node Service** runs real Android APKs on a Node.js server with the public APK Web Lab runtime. The **runner** loads APKs into VM sessions (one `worker_threads` Worker per session running the bundle's unmodified `apk-worker.js` through its own `APKWorkerClient`) and exposes every feature of the site over REST + SSE: the full session config applied before the app starts (device, network allow list / host map / offline, endpoint mocks, permissions and location, method return overrides, ignored Activities, time and memory limits, app data), input (launch, intents/deep links, tap by coordinates or selector, type, scroll, back, wait, reload the current Activity: `POST /sessions/:id/reload` with mode `recreate` — saved state and retained ViewModels kept — or `reopen` — a fresh instance with the same Intent), "screen ready" (`snapshot.screenReady`; `GET /sessions/:id/ready`, `POST /wait { ready: true }` alone or with a selector, `?waitReady=1` on screenshots, an SSE `ready` event on each flip, queue steps `reload`, `waitReady` and `screenshot { waitReady }`, and `screen.ready` / `lab.on('ready')` / `lab.waitReady()` in plugins plus the "Print na tela pronta" template), screen reading (snapshot, Compose tree, named layout bounds, server-side PNG screenshots of the screen or one element), VM inspection (ViewModels, fragments, fields), logcat and network log (paged or streamed), diagnostics, and server-side plugins with the site's `lab` API (off by default). The **queue** schedules declarative jobs (steps with outputs and artifacts) and interactive leases (a proxied runner session) across runners with priorities, per-client fairness, health-checked capacity, retries, cancellation, SSE progress and retention (in memory or a JSON file; the store interface is four methods, easy to back with a database).
 
-Setup: `npm run fetch-runtime` (pinned public build, every file SHA-256 checked), then `RUNNER_TOKEN=… npm run start:runner` and `QUEUE_CLIENTS=id:token QUEUE_RUNNERS=http://127.0.0.1:8081 QUEUE_RUNNER_TOKEN=… npm run start:queue`, or `docker compose up --build`. Security: Bearer tokens, closed app network unless the operator allows hosts, plugins run client JavaScript on the server and must only be enabled for trusted users. CORS: none for the VM on the server; the services' own APIs answer CORS only for configured origins. Full docs and 15 copyable recipes: https://madmax-dev-br.github.io/apk-lab-node-service/. License: MIT for this code; the downloaded runtime keeps its own licenses.
+Defaults equal the site's for a new visitor (`GET /defaults`): device as `defaultDeviceSettings()`, every host allowed, missing APIs `primitives`, app data kept (in `data/app-data`, per `X-Client-Id`; `RUNNER_APP_DATA_DIR=off` disables it), memory "automatic" through `navigator.deviceMemory`, which the Worker shim defines as Chrome would on the machine (RAM in GiB rounded down to a power of two, clamped to [0.25, 8]; 8 GiB or more gives 1024 MiB = 671,088 objects and a 3072 MB Worker heap; reported as `memory` in `/health` and each session). Server exceptions: WebView off, `raster: "full"` (screenshots never capture a reduced frame; with `progressive`, `rasterScale` and `rasterNavigation` apply at load and live), permission dialogs dismissed. With the open default, every HTTP exchange resolves its host first and is refused when an address is loopback, private, link-local (cloud metadata included) or unspecified, unless `RUNNER_ALLOW_PRIVATE_NETWORK=1`; the app gets an IOException naming the policy. Runtime revision `79526b6931c6` (site commit `dd0067d6`).
+
+Setup: `npm run fetch-runtime` (pinned public build, every file SHA-256 checked), then `RUNNER_TOKEN=… npm run start:runner` and `QUEUE_CLIENTS=id:token QUEUE_RUNNERS=http://127.0.0.1:8081 QUEUE_RUNNER_TOKEN=… npm run start:queue`, or `docker compose up --build`. Security: Bearer tokens, private-network targets refused unless the operator allows them, operator cap on hosts (`RUNNER_ALLOWED_HOSTS`), plugins run client JavaScript on the server and must only be enabled for trusted users. CORS: none for the VM on the server; the services' own APIs answer CORS only for configured origins. Full docs and 15 copyable recipes: https://madmax-dev-br.github.io/apk-lab-node-service/. License: MIT for this code; the downloaded runtime keeps its own licenses.

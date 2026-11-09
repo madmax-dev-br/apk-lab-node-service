@@ -1,18 +1,23 @@
 // The runner: an HTTP API that loads APKs into APK Web Lab VM sessions (one worker_threads Worker per session) and exposes every lab feature.
 import os from 'node:os';
 import path from 'node:path';
-import { mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { Router, HttpError, badRequest, notFound, readBody, readJSON, parseMultipart, sendBytes, openSSE, tokenMatches, presentedToken, createHttpServer, parseOrigins, env, envInt, envBool } from '../../lib/http.mjs';
 import { loadBundle } from './bundle.mjs';
 import { createScreenPainter } from './screen.mjs';
 import { rasterBytes, rasterStats } from './rasters.mjs';
-import { validateConfig } from './config.mjs';
+import { validateConfig, withDefaults, sessionDefaults } from './config.mjs';
+import { hostDeviceMemory, memoryReport, workerHeapMb } from './memory.mjs';
+import { REPO_ROOT } from '../../lib/runtime-dir.mjs';
 import { Session, publicSnapshot, inventorySummary } from './session.mjs';
 import { reloadModeFrom, readyFlagFrom, readyQueryFrom, screenReadyOut, SERVICE_PLUGIN_TEMPLATES } from './readiness.mjs';
 
 export const VERSION = '0.1.0';
 const MiB = 1024 * 1024;
+/** RUNNER_APP_DATA_DIR: unset = data/app-data next to the service (created on demand, gitignored), "off" = no persistence, else that directory. */
+export const appDataDirFromEnv = value => value === undefined || value === null || value === '' ? path.join(REPO_ROOT, 'data', 'app-data') : /^(off|none|0|false)$/i.test(value) ? '' : value;
+/** RUNNER_ALLOWED_HOSTS: the operator's cap on the hosts a session may allow. Default "*" (every public host; private ones need RUNNER_ALLOW_PRIVATE_NETWORK); "none" = mocks only. */
+export const allowedHostsFromEnv = value => /^\s*none\s*$/i.test(String(value ?? '')) ? [] : String(value ?? '*').split(/[\s,]+/).map(item => item.trim().toLowerCase()).filter(Boolean);
 
 /** Runner settings from the environment (README, "Variáveis de ambiente"). */
 export function runnerSettingsFromEnv() {
@@ -24,10 +29,10 @@ export function runnerSettingsFromEnv() {
     idleTimeoutMs: envInt('RUNNER_IDLE_TIMEOUT_S', 600, 10) * 1000, maxSessionMs: envInt('RUNNER_SESSION_MAX_S', 3600, 30) * 1000,
     vmHeapMb: envInt('RUNNER_VM_HEAP_MB', 2048, 256, 65536), vmHeapMaxMb: envInt('RUNNER_VM_HEAP_MAX_MB', 6144, 256, 65536), maxMemoryMiB: envInt('RUNNER_MAX_MEMORY_MIB', 2048, 0, 4096),
     minFreeMb: envInt('RUNNER_MIN_FREE_MB', 0, 0), loadTimeoutMs: envInt('RUNNER_LOAD_TIMEOUT_S', 120, 5) * 1000, operationTimeoutMs: envInt('RUNNER_OPERATION_TIMEOUT_S', 45, 5) * 1000,
-    allowedHosts: String(env('RUNNER_ALLOWED_HOSTS', '')).split(/[\s,]+/).map(item => item.trim().toLowerCase()).filter(Boolean),
+    allowedHosts: allowedHostsFromEnv(env('RUNNER_ALLOWED_HOSTS', '*')), allowPrivateNetwork: envBool('RUNNER_ALLOW_PRIVATE_NETWORK', false),
     pluginsAllowed: envBool('RUNNER_ALLOW_PLUGINS', false), maxPlugins: envInt('RUNNER_PLUGIN_MAX', 4, 0, 32), pluginHeapMb: envInt('RUNNER_PLUGIN_HEAP_MB', 64, 16, 1024),
     pluginBusySeconds: envInt('RUNNER_PLUGIN_BUSY_S', 5, 1, 600), pluginMaxRunSeconds: envInt('RUNNER_PLUGIN_MAX_RUN_S', 0, 0), maxPluginCodeBytes: envInt('RUNNER_PLUGIN_MAX_CODE_KB', 256, 1, 4096) * 1024,
-    appDataDir: env('RUNNER_APP_DATA_DIR', ''), runtimeDir: env('APK_LAB_RUNTIME_DIR', undefined), logLevel: env('RUNNER_LOG', 'info'),
+    appDataDir: appDataDirFromEnv(env('RUNNER_APP_DATA_DIR', '')), runtimeDir: env('APK_LAB_RUNTIME_DIR', undefined), logLevel: env('RUNNER_LOG', 'info'),
   };
 }
 
@@ -58,7 +63,7 @@ export async function createRunner(settings = runnerSettingsFromEnv(), { log = d
   const bundle = await loadBundle(settings.runtimeDir);
   const painter = createScreenPainter({ runtimeDir: bundle.info.dir, rasterBytes });
   const sessions = new Map();
-  const policy = { allowedHosts: settings.allowedHosts, pluginsAllowed: settings.pluginsAllowed, maxPlugins: settings.maxPlugins, maxPluginCodeBytes: settings.maxPluginCodeBytes, maxMemoryMiB: settings.maxMemoryMiB };
+  const policy = { allowedHosts: settings.allowedHosts, allowPrivateNetwork: settings.allowPrivateNetwork === true, pluginsAllowed: settings.pluginsAllowed, maxPlugins: settings.maxPlugins, maxPluginCodeBytes: settings.maxPluginCodeBytes, maxMemoryMiB: settings.maxMemoryMiB };
   const limits = { vmHeapMb: settings.vmHeapMb, vmHeapMaxMb: settings.vmHeapMaxMb, loadTimeoutMs: settings.loadTimeoutMs, operationTimeoutMs: settings.operationTimeoutMs,
     plugins: { heapMb: settings.pluginHeapMb, busySeconds: settings.pluginBusySeconds, maxRunSeconds: settings.pluginMaxRunSeconds } };
   let reserved = 0;
@@ -95,7 +100,11 @@ export async function createRunner(settings = runnerSettingsFromEnv(), { log = d
     const cleanup0 = setup(sse); const cleanup = () => { session.off('closed', onClosed); cleanup0?.(); };
   };
 
-  router.add('GET', '/health', () => ({ ok: true, service: 'apk-lab-runner', version: VERSION, runtimeRevision: bundle.info.revision, pluginsAllowed: settings.pluginsAllowed, ...capacity() }), { public: true });
+  // memory: the budget of a default session (memory "automatic": navigator.deviceMemory as Chrome reports it on this machine, see memory.mjs)
+  const defaultMemory = () => { const memory = memoryReport(bundle.memoryBudget, { memoryMiB: 0, deviceMemory: hostDeviceMemory() }); return { ...memory, workerHeapMb: workerHeapMb(memory.budgetMiB, limits) }; };
+  router.add('GET', '/health', () => ({ ok: true, service: 'apk-lab-runner', version: VERSION, runtimeRevision: bundle.info.revision, pluginsAllowed: settings.pluginsAllowed, ...capacity(),
+    memory: defaultMemory(), network: { allowedHosts: settings.allowedHosts, allowPrivateNetwork: policy.allowPrivateNetwork }, appData: !!settings.appDataDir }), { public: true });
+  router.add('GET', '/defaults', () => ({ config: sessionDefaults(policy), device: bundle.defaultDeviceSettings ? Object.fromEntries(Object.entries(bundle.defaultDeviceSettings()).filter(([key]) => !['network', 'memoryMiB', 'eventSeconds', 'location', 'raster', 'layoutBounds'].includes(key))) : null, memory: defaultMemory(), webview: false }));
   router.add('GET', '/', () => ({ service: 'apk-lab-runner', version: VERSION, docs: 'https://github.com/madmax-dev-br/apk-lab-node-service#readme' }), { public: true });
   router.add('GET', '/plugin-templates', () => [...bundle.PLUGIN_TEMPLATES, ...SERVICE_PLUGIN_TEMPLATES].map(t => ({ id: t.id, name: t.name, description: t.description, code: t.code })));
   router.add('GET', '/stats', () => ({ ...capacity(), rasters: rasterStats(), sessions: [...sessions.values()].map(s => s.describe()), memory: process.memoryUsage() }));
@@ -124,7 +133,7 @@ export async function createRunner(settings = runnerSettingsFromEnv(), { log = d
       if (!apk?.length) throw badRequest('No APK in the request body');
       if (apk.length > settings.maxApkBytes) throw new HttpError(413, 'too-large', `APK larger than ${settings.maxApkBytes / MiB} MiB`);
       if (!(apk[0] === 0x50 && apk[1] === 0x4b)) throw badRequest('The body is not an APK (ZIP) file');
-      const config = validateConfig(rawConfig ?? {}, { modules: bundle, policy });
+      const config = withDefaults(validateConfig(rawConfig ?? {}, { modules: bundle, policy }), policy);
       session = new Session({ owner: principal?.id, bundle, painter, limits, policy, appDataDir: appDataDirFor(principal), log });
       sessions.set(session.id, session); reserved--; reserved = Math.max(0, reserved);
       log('info', `session ${session.id} created (${apk.length} bytes)`);
@@ -238,7 +247,6 @@ export async function createRunner(settings = runnerSettingsFromEnv(), { log = d
   router.add('GET', '/sessions/:id/plugins/:pid/blocks/:index/image', async ({ params, res }) => { const image = await pluginsOf(getSession(params.id)).image(params.pid, Number(params.index)); if (!image) throw notFound('No such image block'); sendBytes(res, 200, image.type, image.bytes); });
 
   const server = createHttpServer({ router, corsOrigins: settings.corsOrigins, authenticate, log });
-  if (settings.appDataDir) mkdirSync(path.resolve(settings.appDataDir), { recursive: true });
   return {
     server, settings, bundle, sessions, capacity,
     listen() { return new Promise((resolve, reject) => { server.once('error', reject); server.listen(settings.port, settings.host, () => { server.off('error', reject); resolve(server.address()); }); }); },

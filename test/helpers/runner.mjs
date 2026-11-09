@@ -4,7 +4,7 @@ import { runtime, silent } from './env.mjs';
 
 export const RUNNER_TOKEN = 'runner-test-token';
 export async function startRunner(over = {}) {
-  const settings = { ...runnerSettingsFromEnv(), host: '127.0.0.1', port: 0, token: RUNNER_TOKEN, authDisabled: false, runtimeDir: runtime.dir, maxSessions: 3, allowedHosts: ['127.0.0.1'], corsOrigins: [], pluginsAllowed: false, appDataDir: '', ...over };
+  const settings = { ...runnerSettingsFromEnv(), host: '127.0.0.1', port: 0, token: RUNNER_TOKEN, authDisabled: false, runtimeDir: runtime.dir, maxSessions: 3, allowedHosts: ['*'], corsOrigins: [], pluginsAllowed: false, appDataDir: '', ...over };
   const runner = await createRunner(settings, { log: silent }); const address = await runner.listen();
   const base = `http://127.0.0.1:${address.port}`;
   const api = async (method, path, { json, body, headers = {}, token = RUNNER_TOKEN } = {}) => {

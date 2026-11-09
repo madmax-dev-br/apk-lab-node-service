@@ -9,6 +9,7 @@ import { rasterHooks, isRasterKey } from './rasters.mjs';
 import { deviceForVM, missingApisMode, RESTART_KEYS, validatePlugins } from './config.mjs';
 import { createServerPluginHost } from './plugins.mjs';
 import { screenReadyOut, READY_TIMEOUT_MS, RELOAD_MODES } from './readiness.mjs';
+import { hostDeviceMemory, memoryReport, workerHeapMb } from './memory.mjs';
 
 const VM_WORKER_URL = new URL('./vm-worker.mjs', import.meta.url);
 const LOG_RING = 5000, NET_RING = 2000, MAX_QUEUED_OPERATIONS = 32, MAX_RUNTIME_ERRORS = 20;
@@ -38,9 +39,9 @@ export function inventorySummary(inventory) {
 }
 
 export class Session extends EventEmitter {
-  constructor({ id = randomUUID(), owner = null, bundle, painter, limits, policy, appDataDir = null, log = () => {} }) {
+  constructor({ id = randomUUID(), owner = null, bundle, painter, limits, policy, appDataDir = null, deviceMemory = hostDeviceMemory(), log = () => {} }) {
     super(); this.setMaxListeners(100);
-    Object.assign(this, { id, owner, bundle, painter, limits, policy, appDataDir, log });
+    Object.assign(this, { id, owner, bundle, painter, limits, policy, appDataDir, deviceMemory, log });
     this.state = 'created'; this.createdAt = Date.now(); this.lastUsedAt = Date.now();
     this.config = {}; this.inventory = null; this.appData = null; this.snapshot = null; this.snapshotSeq = 0; this.lastError = null; this.runtimeErrors = [];
     this.queue = Promise.resolve(); this.queued = 0; this.busyWith = null;
@@ -54,7 +55,7 @@ export class Session extends EventEmitter {
   // ---- the VM Worker -------------------------------------------------------------------------------------------------------------------------------------------------
   workerFactory(heapMb) {
     return url => {
-      const thread = new Worker(VM_WORKER_URL, { workerData: { workerURL: url.href, runtimeDir: this.bundle.info.dir, appDataDir: this.appDataDir }, env: {}, argv: [], execArgv: [],
+      const thread = new Worker(VM_WORKER_URL, { workerData: { workerURL: url.href, runtimeDir: this.bundle.info.dir, appDataDir: this.appDataDir, deviceMemory: this.deviceMemory, allowPrivateNetwork: this.policy?.allowPrivateNetwork === true }, env: {}, argv: [], execArgv: [],
         resourceLimits: { maxOldGenerationSizeMb: heapMb, maxYoungGenerationSizeMb: 64, stackSizeMb: 16 }, name: `apk-vm:${this.id.slice(0, 8)}` });
       const adapter = { onmessage: null, onerror: null, onmessageerror: null,
         postMessage: (data, transfer) => thread.postMessage(data, transfer?.filter(item => item instanceof ArrayBuffer)), terminate: () => { adapter.terminated = true; thread.terminate().catch(() => {}); } };
@@ -122,7 +123,9 @@ export class Session extends EventEmitter {
     return this.op('load', () => this.loadNow());
   }
   async loadNow() {
-    const config = this.config, heapMb = Math.min(this.limits.vmHeapMaxMb, Math.max(this.limits.vmHeapMb, (config.memoryMiB || 0) + 1024));
+    // memory "automatic" (memoryMiB 0) follows navigator.deviceMemory like the site (memory.mjs); the Worker's JS heap is sized for that budget
+    const config = this.config, memory = this.memoryFor(config) ?? { budgetMiB: config.memoryMiB || 400 }, heapMb = workerHeapMb(memory.budgetMiB, this.limits);
+    this.memory = { ...memory, workerHeapMb: heapMb };
     this.client?.cancel(); this.client?.rasters?.reset(); this.plugins?.dispose(); this.plugins = null;
     this.state = 'loading'; this.snapshot = null; this.lastReady = null; this.logs = []; this.lastLogSeq = -1; this.netlog.clear(); this.permissionRequests.clear(); this.lastError = null; this.runtimeErrors = []; this.logStreaming = false;
     const client = this.client = this.createClient(heapMb);
@@ -133,7 +136,7 @@ export class Session extends EventEmitter {
       keepData: this.appDataDir ? config.appData?.keep !== false : false, clearData: config.appData?.clear === true, webview: false, memoryMiB: config.memoryMiB ?? 0,
       methodOverrides: config.methodOverrides ?? [], ignoredActivities: config.ignoredActivities ?? [], endpointMocks: config.endpointMocks ?? [], eventSeconds: config.eventSeconds ?? 0,
       permissions: config.permissions?.config || config.permissions?.location ? { config: config.permissions.config ?? { states: {}, denials: {}, once: [] }, location: config.permissions.location } : null,
-      motionRaster: config.raster === 'progressive', logcatStreaming: false });
+      motionRaster: config.raster === 'progressive', rasterScale: config.rasterScale ?? 0.5, rasterNavigation: config.rasterNavigation !== false, logcatStreaming: false });
     this.metrics.loadMs = Math.round(performance.now() - started);
     this.inventory = result.inventory; this.appData = result.appData; this.state = 'ready';
     if (config.permissions?.dialogs && config.permissions.dialogs !== 'dismiss') await client.setPermissions({ dialogs: true });
@@ -166,6 +169,8 @@ export class Session extends EventEmitter {
     if (running) {
       if (partial.device || partial.network) { const { outcome, snapshot } = await this.op('device', () => client.setDevice(deviceForVM(next, this.bundle))); if (snapshot) this.setSnapshot(snapshot); applied.push({ key: 'device', outcome }); }
       if (partial.eventSeconds !== undefined) applied.push({ key: 'eventSeconds', limits: await client.setTimeLimits(partial.eventSeconds) });
+      // "Resolução no movimento" / "Tela nova em baixa resolução": the next snapshot uses them; with raster "full" the Worker keeps the reduced replay off (enabled: false)
+      if (partial.rasterScale !== undefined || partial.rasterNavigation !== undefined) applied.push({ key: 'raster', raster: await client.setRasterSettings({ scale: next.rasterScale ?? 0.5, navigation: next.rasterNavigation !== false }) });
       if (partial.methodOverrides) applied.push({ key: 'methodOverrides', statuses: await client.setMethodOverrides(partial.methodOverrides) });
       if (partial.endpointMocks) applied.push({ key: 'endpointMocks', statuses: await client.setEndpointMocks(partial.endpointMocks) });
       if (partial.ignoredActivities) applied.push({ key: 'ignoredActivities', statuses: await client.setIgnoredActivities(partial.ignoredActivities) });
@@ -179,6 +184,9 @@ export class Session extends EventEmitter {
     }
     return { applied, restartRequired, running, config: this.config };
   }
+
+  /** { budgetMiB, maxHeapObjects, source, deviceMemory } of a config: a memoryMiB step, else the device-memory rule of the site. */
+  memoryFor(config = this.config) { return typeof this.bundle.memoryBudget === 'function' ? memoryReport(this.bundle.memoryBudget, { memoryMiB: config?.memoryMiB ?? 0, deviceMemory: this.deviceMemory }) : null; }
 
   // ---- operations ------------------------------------------------------------------------------------------------------------------------------------------------------
   async launchNow(activity) {
@@ -442,7 +450,8 @@ export class Session extends EventEmitter {
     return { id: this.id, state: this.state, busyWith: this.busyWith, queued: this.queued, createdAt: new Date(this.createdAt).toISOString(), lastUsedAt: new Date(this.lastUsedAt).toISOString(),
       packageName: this.inventory?.packageName ?? null, launcherActivity: this.inventory?.launcherActivity ?? null, activity: this.snapshot?.activityName ?? null, canGoBack: !!this.snapshot?.canGoBack,
       closed: !!this.snapshot?.closed, screenReady: this.snapshot?.screenReady ? !!this.snapshot.screenReady.ready : null, appData: this.appData, metrics: this.metrics, lastError: this.lastError ? { operation: this.lastError.operation, message: this.lastError.message } : null,
-      plugins: this.config.plugins?.length ?? 0, logcatStreaming: this.logStreaming, runtimeRevision: this.bundle.info.revision };
+      plugins: this.config.plugins?.length ?? 0, logcatStreaming: this.logStreaming, runtimeRevision: this.bundle.info.revision,
+      memory: { ...(this.memory ?? this.memoryFor()), liveObjects: this.snapshot?.vmHealth?.liveObjects ?? null, vmLimit: this.snapshot?.vmHealth?.limit ?? null } };
   }
   close(reason = 'closed') {
     if (this.state === 'closed') return;

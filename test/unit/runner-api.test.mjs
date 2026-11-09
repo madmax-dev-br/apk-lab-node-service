@@ -5,10 +5,11 @@ import { runtimeSkip, EMPTY_ZIP } from '../helpers/env.mjs';
 
 test('runner API: auth, health, CORS, validation and policies', { skip: runtimeSkip, timeout: 60000 }, async () => {
   const { startRunner } = await import('../helpers/runner.mjs');
-  const r = await startRunner({ corsOrigins: ['https://painel.exemplo.com'], maxSessions: 1 });
+  const r = await startRunner({ corsOrigins: ['https://painel.exemplo.com'], maxSessions: 1, allowedHosts: ['127.0.0.1'] });   // an operator cap narrower than the default "*"
   try {
     const health = await r.api('GET', '/health', { token: null });
     assert.equal(health.status, 200); assert.equal(health.body.available, 1); assert.equal(health.body.pluginsAllowed, false); assert.match(health.body.runtimeRevision, /^[0-9a-f]{12}$/);
+    assert.ok(health.body.memory.maxHeapObjects >= 65536 && health.body.memory.budgetMiB > 0, JSON.stringify(health.body.memory)); assert.deepEqual(health.body.network, { allowedHosts: ['127.0.0.1'], allowPrivateNetwork: false });
     assert.equal((await r.api('GET', '/sessions', { token: null })).status, 401);
     assert.equal((await r.api('GET', '/sessions', { token: 'nope' })).status, 401);
     assert.deepEqual((await r.api('GET', '/sessions')).body, []);

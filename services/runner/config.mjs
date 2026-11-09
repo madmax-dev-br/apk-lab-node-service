@@ -2,13 +2,34 @@
 // method specs, permissions) plus the runner operator's network policy. Unknown keys are rejected so a typo never silently does nothing.
 import { badRequest, HttpError } from '../../lib/http.mjs';
 
-export const CONFIG_KEYS = ['device', 'network', 'permissions', 'methodOverrides', 'ignoredActivities', 'endpointMocks', 'eventSeconds', 'missingApis', 'strictCrash', 'memoryMiB', 'appData', 'raster', 'logcat', 'plugins', 'launch'];
+export const CONFIG_KEYS = ['device', 'network', 'permissions', 'methodOverrides', 'ignoredActivities', 'endpointMocks', 'eventSeconds', 'missingApis', 'strictCrash', 'memoryMiB', 'appData', 'raster', 'rasterScale', 'rasterNavigation', 'logcat', 'plugins', 'launch'];
 const DEVICE_KEYS = ['screen', 'orientation', 'connectivity', 'navigation', 'fontScale', 'animatorScale', 'statusBarHeightDp', 'darkTheme', 'hour24', 'locale', 'timeZone', 'battery'];
 const NETWORK_KEYS = ['allowedHosts', 'hostMap', 'offline', 'proxyUrl'];
 const PERMISSION_KEYS = ['states', 'location', 'dialogs'];
-export const RESTART_KEYS = ['missingApis', 'strictCrash', 'memoryMiB', 'appData', 'raster'];   // take effect at the next load (POST /sessions/:id/restart)
+export const RESTART_KEYS = ['missingApis', 'strictCrash', 'memoryMiB', 'appData', 'raster'];   // take effect at the next load (POST /sessions/:id/restart); rasterScale / rasterNavigation apply live
 export const DIALOG_MODES = ['dismiss', 'manual', 'allow', 'once', 'deny'];
 const MISSING_APIS = { strict: 'off', off: 'off', void: 'void', primitives: 'primitives', all: 'all' };
+/** "Resolução no movimento" steps (the bundle's motion-raster.js MOTION_SCALE_STEPS): 1 = always full density. */
+export const RASTER_SCALE_STEPS = [1, 0.75, 0.5, 0.35, 0.25];
+
+/**
+ * The defaults of a session: the site's defaults for a new visitor (device-settings.js defaultDeviceSettings(), the page's controls), with three deliberate server
+ * exceptions -- WebView off (no browser on a server), raster "full" (a screenshot must never capture a reduced frame) and permission dialogs answered "dismiss" (no
+ * user to tap). The device block is left to the bundle's sanitizeSettings, whose defaults are the site's (phone, portrait, en-US, 24 h, battery 80 %, online, gesture).
+ * allowedHosts is the site's ["*"] when the operator's RUNNER_ALLOWED_HOSTS allows "*" (its default), else the operator's own list.
+ */
+export function sessionDefaults(policy = {}) {
+  const operator = policy.allowedHosts ?? ['*'];
+  return { network: { allowedHosts: operator.includes('*') ? ['*'] : [...operator], hostMap: [], proxyUrl: '' }, eventSeconds: 0, missingApis: 'primitives', strictCrash: false, memoryMiB: 0,
+    appData: { keep: true, clear: false }, raster: 'full', rasterScale: 0.5, rasterNavigation: true, logcat: 'on-demand' };
+}
+/** A validated config with the session defaults filled in for every key the client left out (network keys one by one). */
+export function withDefaults(config, policy) {
+  const defaults = sessionDefaults(policy), out = { ...defaults, ...config };
+  out.network = { ...defaults.network, ...(config.network ?? {}) };
+  out.appData = { ...defaults.appData, ...(config.appData ?? {}) };
+  return out;
+}
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 function only(value, keys, where) {
@@ -106,11 +127,13 @@ export function validateConfig(input, { modules, policy }, { partial = false } =
     });
   }
   if (input.eventSeconds !== undefined) { const value = Number(input.eventSeconds); if (!(value === 0 || modules.EVENT_SECONDS_STEPS.includes(value))) throw badRequest(`config.eventSeconds: 0 (defaults) or one of ${modules.EVENT_SECONDS_STEPS.join(', ')}`); out.eventSeconds = value; }
-  if (input.missingApis !== undefined) { if (!(input.missingApis in MISSING_APIS)) throw badRequest('config.missingApis: "strict" (default), "void", "primitives" or "all"'); out.missingApis = input.missingApis === 'off' ? 'strict' : input.missingApis; }
+  if (input.missingApis !== undefined) { if (!(input.missingApis in MISSING_APIS)) throw badRequest('config.missingApis: "primitives" (default, like the site), "strict", "void" or "all"'); out.missingApis = input.missingApis === 'off' ? 'strict' : input.missingApis; }
   if (input.strictCrash !== undefined) { if (typeof input.strictCrash !== 'boolean') throw badRequest('config.strictCrash must be a boolean'); out.strictCrash = input.strictCrash; }
   if (input.memoryMiB !== undefined) { const value = Number(input.memoryMiB); if (!modules.isMemoryStep(value)) throw badRequest(`config.memoryMiB: 0 (automatic) or one of ${modules.MEMORY_STEPS_MIB.join(', ')}`); if (value > policy.maxMemoryMiB) throw new HttpError(403, 'memory-policy', `config.memoryMiB above the runner's limit (${policy.maxMemoryMiB} MiB)`); out.memoryMiB = value; }
   if (input.appData !== undefined) { only(input.appData, ['keep', 'clear'], 'config.appData'); out.appData = { keep: input.appData.keep !== false, clear: input.appData.clear === true }; }
   if (input.raster !== undefined) { if (!['progressive', 'full'].includes(input.raster)) throw badRequest('config.raster: "full" (default) or "progressive"'); out.raster = input.raster; }
+  if (input.rasterScale !== undefined) { const value = Number(input.rasterScale); if (typeof input.rasterScale !== 'number' || !RASTER_SCALE_STEPS.includes(value)) throw badRequest(`config.rasterScale: one of ${RASTER_SCALE_STEPS.join(', ')} (default 0.5; used while the screen moves when raster is "progressive")`); out.rasterScale = value; }
+  if (input.rasterNavigation !== undefined) { if (typeof input.rasterNavigation !== 'boolean') throw badRequest('config.rasterNavigation must be a boolean (default true: a new screen starts reduced when raster is "progressive")'); out.rasterNavigation = input.rasterNavigation; }
   if (input.logcat !== undefined) { if (!['on-demand', 'always'].includes(input.logcat)) throw badRequest('config.logcat: "on-demand" (default) or "always"'); out.logcat = input.logcat; }
   if (input.launch !== undefined) { if (!(typeof input.launch === 'boolean' || (typeof input.launch === 'string' && input.launch.length <= 500))) throw badRequest('config.launch: true, false or an Activity name'); out.launch = input.launch; }
   if (input.plugins !== undefined) out.plugins = validatePlugins(input.plugins, policy);
@@ -137,7 +160,7 @@ export function deviceForVM(config, modules) {
   const settings = modules.sanitizeSettings({ ...(config.device ?? {}), network: { allowedHosts: config.network?.allowedHosts ?? [], hostMap: config.network?.hostMap ?? [], proxyUrl: config.network?.proxyUrl ?? '' } });
   if (config.network?.offline) settings.connectivity = 'offline';
   else if (config.device?.connectivity) settings.connectivity = config.device.connectivity;
-  delete settings.location; delete settings.layoutBounds; delete settings.memoryMiB; delete settings.eventSeconds;
+  delete settings.location; delete settings.layoutBounds; delete settings.memoryMiB; delete settings.eventSeconds; delete settings.raster;   // raster settings travel as load options / the raster-settings side message
   return settings;
 }
-export const missingApisMode = value => MISSING_APIS[value ?? 'strict'] ?? 'off';
+export const missingApisMode = value => MISSING_APIS[value ?? 'primitives'] ?? 'primitives';
