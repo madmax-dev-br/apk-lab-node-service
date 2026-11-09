@@ -29,7 +29,7 @@ Cada sessão roda o `runtime/apk-worker.js` do bundle público **sem modificaç�
 
 ## De onde vem o runtime
 
-Este repositório não contém o código do lab. `npm run fetch-runtime` baixa o build público de um **commit fixo** do repositório [`madmax-dev-br/apk-browser-lab-site`](https://github.com/madmax-dev-br/apk-browser-lab-site) (hoje a revisão `79526b6931c6`, commit `dd0067d6`) e confere o **SHA-256 de cada arquivo** contra `runtime.lock.json` antes de instalar em `vendor/apk-lab/` (ignorado pelo git). São ~111 MiB: `runtime/`, `framework-aosp/`, `framework-resources/`, `vendor/`, `fonts/`, `licenses/`, `THIRD_PARTY.md` e os módulos de página que os serviços importam. O site não publica APKs: os serviços rodam os APKs que você envia.
+Este repositório não contém o código do lab. `npm run fetch-runtime` baixa o build público de um **commit fixo** do repositório [`madmax-dev-br/apk-browser-lab-site`](https://github.com/madmax-dev-br/apk-browser-lab-site) (hoje a revisão `308c7a12ce00`, commit `f4c096c8`) e confere o **SHA-256 de cada arquivo** contra `runtime.lock.json` antes de instalar em `vendor/apk-lab/` (ignorado pelo git). São ~111 MiB: `runtime/`, `framework-aosp/`, `framework-resources/`, `vendor/`, `fonts/`, `licenses/`, `THIRD_PARTY.md` e os módulos de página que os serviços importam. O site não publica APKs: os serviços rodam os APKs que você envia.
 
 ```sh
 npm run fetch-runtime                      # baixa e confere
@@ -110,6 +110,7 @@ Referência completa com exemplos de requisição e resposta: **[documentação]
 | `GET /sessions/:id/snapshot\|layout-bounds\|elements\|compose-tree\|screen-state\|diagnostic` | leitura da tela e Resumo |
 | `GET /sessions/:id/screenshot.png`, `GET /sessions/:id/elements/:key/screenshot.png` | PNG da tela / de um elemento; `?waitReady=1&readyTimeoutMs=15000` espera a tela pronta antes (408 com os motivos) |
 | `GET /sessions/:id/activity\|view-models\|fragments\|methods`, `POST /sessions/:id/inspect\|field` | inspeção da VM |
+| `GET /sessions/:id/classes?match=`, `POST /sessions/:id/statics\|static-field\|instances\|referrers` | estado fora da tela: campos estáticos de classes já inicializadas, classes pelo nome, objetos vivos de um tipo e quem os segura (varredura do heap em páginas curtas) |
 | `GET /sessions/:id/logcat\|network` (+ `/stream`), `GET /sessions/:id/events` | logs paginados e SSE; `/events` tem o evento `ready` a cada virada da tela pronta |
 | `GET /sessions/:id/permission-requests`, `POST .../permission-requests/:rid`, `POST /sessions/:id/app-data/clear` | |
 | `GET\|PUT /sessions/:id/plugins`, `GET /sessions/:id/plugins/stream\|:pid`, `POST .../plugins/:pid/stop\|restart` | plugins |

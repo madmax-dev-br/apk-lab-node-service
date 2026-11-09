@@ -25,6 +25,11 @@ const STEP_FIELDS = {
   inspect: ['handle', 'options'],
   field: ['handle', 'path', 'options'],
   composeTree: ['maxNodes'],
+  classes: ['match', 'limit', 'initialized'],
+  statics: ['className', 'options'],
+  staticField: ['className', 'path', 'options'],
+  instances: ['className', 'subclasses', 'limit', 'after', 'maxPages'],
+  referrers: ['handle', 'limit', 'after', 'maxPages'],
   config: ['config'],
   logcat: ['level', 'tag', 'contains', 'limit'],
   network: ['limit'],
@@ -60,8 +65,11 @@ export function validateSteps(steps, { pluginsAllowed = true } = {}) {
     if (step.type === 'type' && typeof step.text !== 'string') throw badRequest(`${where} (type) needs text`);
     if (step.type === 'sleep' && !(Number.isFinite(step.ms) && step.ms >= 0 && step.ms <= 60000)) throw badRequest(`${where} (sleep) needs ms between 0 and 60000`);
     if (step.timeoutMs !== undefined && !(Number.isFinite(step.timeoutMs) && step.timeoutMs > 0 && step.timeoutMs <= 120000)) throw badRequest(`${where}.timeoutMs must be 1..120000`);
-    if (step.type === 'viewModelField' && (typeof step.viewModel !== 'string' || typeof step.path !== 'string')) throw badRequest(`${where} (viewModelField) needs viewModel (class name or suffix) and path`);
-    if (['inspect', 'field'].includes(step.type) && typeof step.handle !== 'string') throw badRequest(`${where} (${step.type}) needs a handle`);
+    if (step.type === 'viewModelField' && (typeof step.viewModel !== 'string' || !(typeof step.path === 'string' || Array.isArray(step.path)))) throw badRequest(`${where} (viewModelField) needs viewModel (class name or suffix) and path`);
+    if (['inspect', 'field', 'referrers'].includes(step.type) && typeof step.handle !== 'string') throw badRequest(`${where} (${step.type}) needs a handle`);
+    if (['statics', 'staticField', 'instances'].includes(step.type) && typeof step.className !== 'string') throw badRequest(`${where} (${step.type}) needs className`);
+    if (step.type === 'staticField' && !(typeof step.path === 'string' || (Array.isArray(step.path) && step.path.every(part => typeof part === 'string' || typeof part === 'number')))) throw badRequest(`${where} (staticField) needs path (string or array)`);
+    if (step.type === 'classes' && (typeof step.match !== 'string' || !step.match)) throw badRequest(`${where} (classes) needs match`);
     if (step.type === 'plugins') {
       if (!pluginsAllowed) throw new HttpError(403, 'plugins-disabled', `${where}: plugins are disabled on this queue (QUEUE_ALLOW_PLUGINS) or its runners`);
       if (!Array.isArray(step.plugins) || !step.plugins.length) throw badRequest(`${where} (plugins) needs a plugins list`);
@@ -120,6 +128,11 @@ export async function runStep(step, { runner, sessionId, signal, index }) {
     }
     case 'inspect': return { output: await call('POST', '/inspect', { handle: step.handle, options: step.options ?? {} }) };
     case 'field': return { output: await call('POST', '/field', { handle: step.handle, path: step.path ?? '', options: step.options ?? {} }) };
+    case 'classes': return { output: await call('GET', `/classes?${new URLSearchParams({ match: String(step.match ?? ''), ...(step.limit !== undefined ? { limit: String(step.limit) } : {}), ...(step.initialized ? { initialized: '1' } : {}) })}`) };
+    case 'statics': return { output: await call('POST', '/statics', { className: step.className, options: step.options ?? {} }) };
+    case 'staticField': return { output: await call('POST', '/static-field', { className: step.className, path: step.path ?? '', options: step.options ?? {} }) };
+    case 'instances': return { output: await call('POST', '/instances', pick(step, ['className', 'subclasses', 'limit', 'after', 'maxPages'])) };
+    case 'referrers': return { output: await call('POST', '/referrers', pick(step, ['handle', 'limit', 'after', 'maxPages'])) };
     case 'composeTree': { const r = await call('GET', `/compose-tree?maxNodes=${step.maxNodes ?? 2000}`); return { output: { totalNodes: r?.totalNodes ?? 0 }, artifacts: [{ name: `${label}.compose-tree.json`, type: 'application/json', bytes: Buffer.from(JSON.stringify(r, null, 2)) }] }; }
     case 'config': return { output: await call('PATCH', '/config', step.config) };
     case 'logcat': { const query = new URLSearchParams(Object.entries(pick(step, ['level', 'tag', 'contains', 'limit'])).map(([k, v]) => [k, String(v)])); const r = await call('GET', `/logcat?${query}`); return { output: { lines: r.lines.length, total: r.total }, artifacts: [{ name: `${label}.logcat.json`, type: 'application/json', bytes: Buffer.from(JSON.stringify(r, null, 2)) }] }; }

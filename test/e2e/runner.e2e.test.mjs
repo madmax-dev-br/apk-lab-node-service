@@ -42,6 +42,19 @@ test('Compose app: launch, wait, tap by testTag, type, layout bounds, screenshot
     const appModel = models.body.find(model => !model.library) ?? models.body[0];
     const inspected = await r.api('POST', `/sessions/${id}/inspect`, { json: { handle: appModel.handle, options: { depth: 1 } } }); assert.equal(inspected.status, 200); assert.equal(inspected.body.$type, appModel.className);
     assert.equal((await r.api('POST', `/sessions/${id}/inspect`, { json: { handle: 'h1.zz' } })).status, 410);
+    // state outside the screen: Compose keeps its running recomposers in a static StateFlow of Recomposer (its companion's property)
+    const R = 'androidx.compose.runtime.Recomposer';
+    const classes = await r.api('GET', `/sessions/${id}/classes?match=${encodeURIComponent('runtime.Recomposer')}&initialized=1`); assert.equal(classes.status, 200);
+    assert.ok(classes.body.items.some(item => item.className === R && item.status === 'initialized'));
+    const statics = await r.api('POST', `/sessions/${id}/statics`, { json: { className: R } }); assert.equal(statics.status, 200); assert.equal(statics.body.fields._runningRecomposers.$kind, 'StateFlow');
+    const viaArray = await r.api('POST', `/sessions/${id}/static-field`, { json: { className: R, path: ['_runningRecomposers', 'value'] } }); assert.equal(viaArray.status, 200);
+    assert.equal(viaArray.body.$handle, (await r.api('POST', `/sessions/${id}/static-field`, { json: { className: R, path: '_runningRecomposers.value' } })).body.$handle);
+    const instances = await r.api('POST', `/sessions/${id}/instances`, { json: { className: R } }); assert.equal(instances.status, 200);
+    assert.equal(instances.body.done, true); assert.equal(instances.body.items.length, 1);
+    const referrers = await r.api('POST', `/sessions/${id}/referrers`, { json: { handle: instances.body.items[0].handle, limit: 200 } }); assert.ok(referrers.body.items.some(item => item.via === 'this$0'));
+    const paged = await r.api('POST', `/sessions/${id}/instances`, { json: { className: 'java.lang.Object', limit: 3 } }); assert.equal(paged.body.items.length, 3); assert.equal(paged.body.done, false); assert.ok(paged.body.next > 0);
+    assert.equal((await r.api('POST', `/sessions/${id}/statics`, { json: { className: 'dev.nowhere.Missing' } })).status, 404);
+    assert.equal((await r.api('GET', `/sessions/${id}/classes`)).status, 400);
     const back = await r.api('POST', `/sessions/${id}/back`); assert.equal(back.status, 200);
     const diag = await r.api('GET', `/sessions/${id}/diagnostic`); assert.match(diag.body.screenState, /Estado da tela/);
   } finally { await r.api('DELETE', `/sessions/${id}`); }

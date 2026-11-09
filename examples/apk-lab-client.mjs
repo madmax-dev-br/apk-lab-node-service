@@ -79,6 +79,11 @@ export class Session {
   viewModels() { return this.call('GET', '/view-models'); }
   fragments() { return this.call('GET', '/fragments'); }
   inspect(handle, options = {}) { return this.call('POST', '/inspect', { handle, options }); }
+  classes(match, { limit, initialized } = {}) { return this.call('GET', `/classes?${new URLSearchParams({ match, ...(limit ? { limit: String(limit) } : {}), ...(initialized ? { initialized: '1' } : {}) })}`); }
+  statics(className, options = {}) { return this.call('POST', '/statics', { className, options }); }
+  staticField(className, path, options = {}) { return this.call('POST', '/static-field', { className, path, options }); }
+  instances(className, options = {}) { return this.call('POST', '/instances', { className, ...options }); }
+  referrers(handle, options = {}) { return this.call('POST', '/referrers', { handle, ...options }); }
   field(handle, path, options = {}) { return this.call('POST', '/field', { handle, path, options }); }
   methods(query) { return this.call('GET', `/methods?query=${encodeURIComponent(query)}`); }
   logcat(query = {}) { return this.call('GET', `/logcat?${new URLSearchParams(query)}`); }

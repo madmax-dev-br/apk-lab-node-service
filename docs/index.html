@@ -31,7 +31,7 @@
       <li><a href="#r5">5. Permissões e localização</a></li><li><a href="#r6">6. Retorno de método</a></li><li><a href="#r7">7. Ignorar Activity</a></li><li><a href="#r8">8. Dispositivo ao vivo</a></li>
       <li><a href="#r9">9. Deep link</a></li><li><a href="#r10">10. Job na fila</a></li><li><a href="#r11">11. Lease interativo</a></li><li><a href="#r12">12. Logcat e rede (SSE)</a></li>
       <li><a href="#r13">13. Plugin no servidor</a></li><li><a href="#r14">14. Captura de um elemento</a></li><li><a href="#r15">15. CORS</a></li>
-      <li><a href="#r16">16. Recarregar a tela</a></li><li><a href="#r17">17. Esperar a tela pronta e tirar o print</a></li></ol></li>
+      <li><a href="#r16">16. Recarregar a tela</a></li><li><a href="#r17">17. Esperar a tela pronta e tirar o print</a></li><li><a href="#r18">18. Estado num campo estático</a></li></ol></li>
     <li><a href="#seguranca">Segurança</a></li>
     <li><a href="#cors">CORS</a></li>
     <li><a href="#limitacoes">Limitações</a></li>
@@ -253,7 +253,7 @@ GET /sessions/:id  →  "memory": { ..., "liveObjects": 40276, "vmLimit": 671088
 
   <h3>Serviço</h3>
   <div class="endpoint"><span class="method get">GET</span><code>/health</code><span>público</span></div>
-  <pre><code>{ "ok": true, "service": "apk-lab-runner", "version": "0.1.0", "runtimeRevision": "79526b6931c6", "pluginsAllowed": false,
+  <pre><code>{ "ok": true, "service": "apk-lab-runner", "version": "0.1.0", "runtimeRevision": "308c7a12ce00", "pluginsAllowed": false,
   "maxSessions": 2, "activeSessions": 1, "reserved": 0, "available": 1, "freeMemoryMb": 5120, "memoryOk": true,
   "memory": { "budgetMiB": 1024, "maxHeapObjects": 671088, "source": "navigator.deviceMemory=8", "deviceMemory": 8, "workerHeapMb": 3072 },
   "network": { "allowedHosts": ["*"], "allowPrivateNetwork": false }, "appData": true }</code></pre>
@@ -342,6 +342,18 @@ GET /sessions/:id  →  "memory": { ..., "liveObjects": 40276, "vmLimit": 671088
   <pre><code>POST /sessions/:id/inspect  { "handle": "h6755.j0l26s", "options": { "depth": 2, "maxFields": 200 } }
 POST /sessions/:id/field    { "handle": "h6755.j0l26s", "path": "pedidos.value.0.titulo" }
 → valores JSON; MutableState/StateFlow/LiveData aparecem com "value". 410 "collected" quando o objeto já não existe.</code></pre>
+  <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/classes?match=Contexto&amp;initialized=1</code> · <span class="method post">POST</span><code>/statics</code> · <span class="method post">POST</span><code>/static-field</code></div>
+  <p>Estado fora da tela, guardado num campo estático: um <code>object</code> Kotlin, um companion, um singleton, o contêiner de injeção de dependências com seus escopos. Uma classe que o app ainda não inicializou responde <code>status: "not-initialized"</code> (a consulta nunca roda o <code>&lt;clinit&gt;</code>); <code>static-field</code> nela dá 409. Classe inexistente: 404.</p>
+  <pre><code>GET  /sessions/:id/classes?match=Contexto          → { "items": [ { "className": "...", "status": "initialized", "staticFields": 2 } ], "matched": 1 }
+POST /sessions/:id/statics       { "className": "com.exemplo.di.ContextoGlobal", "options": { "depth": 2 } }
+POST /sessions/:id/static-field  { "className": "com.exemplo.di.ContextoGlobal", "path": ["registro", "com.exemplo.Tela::id", "valor"] }</code></pre>
+  <div class="endpoint"><span class="method post">POST</span><code>/sessions/:id/instances</code> · <span class="method post">POST</span><code>/sessions/:id/referrers</code></div>
+  <p>Os objetos vivos de um tipo (subclasses incluídas, a menos que <code>"subclasses": false</code>) e quem segura um objeto (campo estático ou objeto e o campo <code>via</code>). O heap é varrido em páginas curtas entre eventos da VM; a resposta junta páginas até <code>limit</code> (50) ou <code>maxPages</code> (100), e <code>next</code> continua uma varredura incompleta (<code>after</code>).</p>
+  <pre><code>POST /sessions/:id/instances  { "className": "com.exemplo.tela.Armazenamento", "limit": 5 }
+→ { "items": [ { "handle": "h9120.j0l26s", "className": "com.exemplo.tela.Armazenamento" } ], "scanned": 35072, "done": true, "next": null, "pages": 1 }
+POST /sessions/:id/referrers  { "handle": "h9120.j0l26s" }
+→ { "items": [ { "kind": "object", "handle": "h8800.j0l26s", "className": "com.exemplo.di.FabricaDeEscopo", "via": "valores" } ], "done": true }</code></pre>
+  <p><code>path</code> em <code>/field</code> e <code>/static-field</code> pode ser um array quando uma parte tem pontos (uma chave de mapa). WeakReference (<code>ref.get</code>), <code>by lazy</code> e ThreadLocal são atravessados. Nenhuma consulta chama métodos do app.</p>
   <div class="endpoint"><span class="method get">GET</span><code>/sessions/:id/methods?query=isEnabled</code></div><p>Métodos do APK que casam com o texto (para montar <code>methodOverrides</code>).</p>
 
   <h3>Logcat, rede e eventos</h3>
@@ -417,6 +429,11 @@ POST /sessions/:id/field    { "handle": "h6755.j0l26s", "path": "pedidos.value.0
     <tr><td><code>elements</code>, <code>viewModels</code>, <code>screenState</code></td><td><code>selector?</code></td><td>saída inline</td></tr>
     <tr><td><code>viewModelField</code></td><td><code>viewModel</code> (classe ou sufixo), <code>path</code></td><td>valor do campo</td></tr>
     <tr><td><code>inspect</code>, <code>field</code></td><td><code>handle</code>, <code>path?</code>, <code>options?</code></td><td>valor</td></tr>
+    <tr><td><code>classes</code></td><td><code>match</code>, <code>limit?</code>, <code>initialized?</code></td><td>classes pelo nome</td></tr>
+    <tr><td><code>statics</code></td><td><code>className</code>, <code>options?</code></td><td>campos estáticos</td></tr>
+    <tr><td><code>staticField</code></td><td><code>className</code>, <code>path</code> (texto ou array), <code>options?</code></td><td>valor</td></tr>
+    <tr><td><code>instances</code></td><td><code>className</code>, <code>subclasses?</code>, <code>limit?</code>, <code>after?</code>, <code>maxPages?</code></td><td>handles</td></tr>
+    <tr><td><code>referrers</code></td><td><code>handle</code>, <code>limit?</code>, <code>after?</code>, <code>maxPages?</code></td><td>quem segura</td></tr>
     <tr><td><code>config</code></td><td><code>config</code> parcial (ao vivo)</td><td>applied</td></tr>
     <tr><td><code>logcat</code>, <code>network</code></td><td>filtros</td><td>artefato JSON</td></tr>
     <tr><td><code>plugins</code></td><td><code>plugins</code>, <code>seconds</code></td><td>saída dos plugins (+ imagens)</td></tr>
@@ -734,6 +751,24 @@ const done = await queue.waitJob(job.id);
 await writeFile('pronta.png', await queue.artifact(done, 'pronta.png'));</code></pre></div>
   </div>
   <p>Num plugin (precisa de <code>RUNNER_ALLOW_PLUGINS=1</code>): <code>const tela = await lab.waitReady(); lab.ui.image(await lab.screenshot(), { caption: tela.activity });</code> — ou o modelo "Print na tela pronta", que usa <code>lab.on('ready', ...)</code>.</p>
+
+  <h3 id="r18">18. Estado guardado num campo estático (contêiner de injeção, singleton)</h3>
+  <p>Quando o estado não está num ViewModel da tela: ache a classe que guarda o estático e leia o caminho até o valor, ou ache os objetos pelo tipo e descubra quem os segura. Os nomes são de exemplo.</p>
+  <div class="tabs">
+  <div class="panel" data-label="curl"><pre><code>curl -s -H "Authorization: Bearer $RUNNER_TOKEN" "$RUNNER/sessions/$SESSION/classes?match=Contexto&amp;initialized=1"
+curl -s -X POST -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' \
+  -d '{"className":"com.exemplo.tela.Armazenamento","limit":5}' $RUNNER/sessions/$SESSION/instances
+curl -s -X POST -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' \
+  -d '{"handle":"h9120.j0l26s"}' $RUNNER/sessions/$SESSION/referrers          # o caminho até a raiz
+curl -s -X POST -H "Authorization: Bearer $RUNNER_TOKEN" -H 'content-type: application/json' \
+  -d '{"className":"com.exemplo.di.ContextoGlobal","path":["registro","com.exemplo.Tela::id","valor"]}' $RUNNER/sessions/$SESSION/static-field</code></pre></div>
+  <div class="panel" data-label="Node"><pre><code>const s = runner.session(id);
+const { items } = await s.instances('com.exemplo.tela.Armazenamento', { limit: 5 });
+for (const item of items) console.log(await s.field(item.handle, 'dados', { depth: 2 }));
+console.log(await s.referrers(items[0].handle));
+console.log(await s.staticField('com.exemplo.di.ContextoGlobal', ['registro', 'com.exemplo.Tela::id', 'valor']));</code></pre></div>
+  </div>
+  <p>Na fila: <code>{ "type": "instances", "className": "..." }</code>, <code>{ "type": "staticField", "className": "...", "path": [...] }</code>. Num plugin: <code>lab.classes</code>, <code>lab.statics</code>, <code>lab.staticField</code>, <code>lab.instances</code>, <code>lab.referrers</code> e <code>lab.watch({ static: 'classe' }, caminho, fn)</code>.</p>
 </section>
 
 <section id="seguranca">
@@ -781,12 +816,13 @@ QUEUE_CORS_ORIGINS=https://painel.exemplo.com</code></pre>
     <li>Desempenho: a VM interpreta bytecode; apps grandes iniciam em segundos a dezenas de segundos e usam centenas de MiB por sessão.</li>
     <li>Capturas: rasters da VM (Compose, Canvas, fundos, sombras, parágrafos Skia) são exatos; o texto que o site desenha com o DOM (TextView/Button simples) é desenhado aqui com Roboto, como aproximação (<code>X-Screenshot-Notes.approximatedText</code>). Drawables vetoriais em SVG não são desenhados (contados em <code>vectorDrawablesSkipped</code>).</li>
     <li>Sem áudio no servidor; as amostras de <code>AudioTrack</code> são descartadas.</li>
+    <li>Renderização só em CPU: a opção "GPU (experimental)" do site usa WebGL no navegador, que o servidor não tem.</li>
   </ul>
 </section>
 
 <section id="english">
   <h2>English summary</h2>
-  <p><strong>APK Lab Node Service</strong> runs real Android APKs on a Node.js server with the public <a href="https://madmax-dev-br.github.io/apk-browser-lab-site/">APK Web Lab</a> runtime (a Dalvik VM in JavaScript). The <strong>runner</strong> loads APKs into VM sessions (one <code>worker_threads</code> Worker each, running the bundle's unmodified <code>apk-worker.js</code> through its own <code>APKWorkerClient</code>) and exposes every feature of the site over REST + SSE: session config applied before the app starts (device, network allow list / host map / offline, endpoint mocks, permissions and location, method return overrides, ignored Activities, time and memory limits, app data), input (launch, intents, tap by coordinates or selector, type, scroll, back, wait for an element, reload the current Activity with <code>POST /sessions/:id/reload { mode: "recreate" | "reopen" }</code>: recreate keeps saved state and retained ViewModels, reopen starts a fresh instance with the same Intent), "screen ready" (<code>snapshot.screenReady</code>: the Activity resumed with its first frame drawn, its fragments RESUMED, nothing pending for 300 ms; <code>GET /sessions/:id/ready</code>, <code>POST /wait { ready: true }</code> alone or with a selector, <code>?waitReady=1</code> on screenshots, an SSE <code>ready</code> event on each flip, queue steps <code>reload</code> / <code>waitReady</code> / <code>screenshot { waitReady }</code>, and <code>screen.ready</code>, <code>lab.on('ready')</code>, <code>lab.waitReady()</code> in plugins plus the "Print na tela pronta" template), screen reading (snapshot, Compose tree, layout bounds with names, server-side PNG screenshots of the screen or one element via CanvasKit), VM inspection (ViewModels, fragments, fields), logcat and network log (paged or streamed), diagnostics, and server-side plugins with the site's <code>lab</code> API (disabled by default). The <strong>queue</strong> schedules jobs (declarative steps with outputs and artifacts) and interactive leases (a proxied runner session) across runners with priorities, per-client fairness, capacity from health checks, retries, cancellation, SSE progress and retention; storage is in memory or a JSON file and can be swapped for a database.</p>
+  <p><strong>APK Lab Node Service</strong> runs real Android APKs on a Node.js server with the public <a href="https://madmax-dev-br.github.io/apk-browser-lab-site/">APK Web Lab</a> runtime (a Dalvik VM in JavaScript). The <strong>runner</strong> loads APKs into VM sessions (one <code>worker_threads</code> Worker each, running the bundle's unmodified <code>apk-worker.js</code> through its own <code>APKWorkerClient</code>) and exposes every feature of the site over REST + SSE: session config applied before the app starts (device, network allow list / host map / offline, endpoint mocks, permissions and location, method return overrides, ignored Activities, time and memory limits, app data), input (launch, intents, tap by coordinates or selector, type, scroll, back, wait for an element, reload the current Activity with <code>POST /sessions/:id/reload { mode: "recreate" | "reopen" }</code>: recreate keeps saved state and retained ViewModels, reopen starts a fresh instance with the same Intent), "screen ready" (<code>snapshot.screenReady</code>: the Activity resumed with its first frame drawn, its fragments RESUMED, nothing pending for 300 ms; <code>GET /sessions/:id/ready</code>, <code>POST /wait { ready: true }</code> alone or with a selector, <code>?waitReady=1</code> on screenshots, an SSE <code>ready</code> event on each flip, queue steps <code>reload</code> / <code>waitReady</code> / <code>screenshot { waitReady }</code>, and <code>screen.ready</code>, <code>lab.on('ready')</code>, <code>lab.waitReady()</code> in plugins plus the "Print na tela pronta" template), screen reading (snapshot, Compose tree, layout bounds with names, server-side PNG screenshots of the screen or one element via CanvasKit), VM inspection (ViewModels, fragments, fields, static fields of initialized classes, classes by name, live instances of a type and who holds an object), logcat and network log (paged or streamed), diagnostics, and server-side plugins with the site's <code>lab</code> API (disabled by default). The <strong>queue</strong> schedules jobs (declarative steps with outputs and artifacts) and interactive leases (a proxied runner session) across runners with priorities, per-client fairness, capacity from health checks, retries, cancellation, SSE progress and retention; storage is in memory or a JSON file and can be swapped for a database.</p>
   <p>Quick start: <code>npm run fetch-runtime</code> (downloads the pinned public build and checks every SHA-256), <code>RUNNER_TOKEN=… npm run start:runner</code>, <code>QUEUE_CLIENTS=id:token QUEUE_RUNNERS=http://127.0.0.1:8081 QUEUE_RUNNER_TOKEN=… npm run start:queue</code>, or <code>docker compose up --build</code>. Defaults equal the site's for a new visitor (<code>GET /defaults</code>): device as <code>defaultDeviceSettings()</code>, every public host allowed, missing APIs <code>primitives</code>, app data kept in <code>data/app-data</code> per <code>X-Client-Id</code> (<code>RUNNER_APP_DATA_DIR=off</code> disables it), memory "automatic" through <code>navigator.deviceMemory</code>, which the Worker shim defines as Chrome would (RAM in GiB rounded down to a power of two, clamped to [0.25, 8]; 8 GiB or more gives 1024 MiB = 671,088 objects and a 3072 MB Worker heap; reported as <code>memory</code> in <code>/health</code> and each session). Server exceptions: WebView off, <code>raster: "full"</code> (with <code>progressive</code>, <code>rasterScale</code> and <code>rasterNavigation</code> apply at load and live), permission dialogs dismissed. Runtime revision <code>79526b6931c6</code>. Security: Bearer tokens everywhere, every HTTP exchange of the app resolves its host first and is refused when an address is loopback, private, link-local (cloud metadata included) or unspecified unless <code>RUNNER_ALLOW_PRIVATE_NETWORK=1</code>, the operator caps hosts with <code>RUNNER_ALLOWED_HOSTS</code> (default <code>*</code>), plugins run user JavaScript on the server and must only be enabled for trusted users (worker_threads + node:vm are not a security boundary). CORS: the VM has no CORS on the server (requests go straight out under the session's policy); the services' own APIs answer CORS only for origins listed in <code>RUNNER_CORS_ORIGINS</code> / <code>QUEUE_CORS_ORIGINS</code>. Code: MIT; the downloaded runtime keeps its own licenses (see its <code>THIRD_PARTY.md</code>).</p>
 </section>
 <footer>APK Lab Node Service · código MIT · o runtime baixado mantém as próprias licenças · <a href="https://github.com/madmax-dev-br/apk-lab-node-service">GitHub</a></footer>

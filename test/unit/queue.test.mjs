@@ -48,6 +48,10 @@ test('auth and validation: missing token, unknown keys, bad steps, plugins disab
     assert.match((await t.submit({ steps: [{ type: 'teleport' }] })).body.error.message, /steps\[0\]\.type/);
     assert.match((await t.submit({ steps: [{ type: 'wait' }] })).body.error.message, /needs a selector/);
     assert.match((await t.submit({ steps: [{ type: 'tap', selector: { tag: 'x' } }] })).body.error.message, /unknown keys tag/);
+    assert.match((await t.submit({ steps: [{ type: 'statics' }] })).body.error.message, /\(statics\) needs className/);
+    assert.match((await t.submit({ steps: [{ type: 'staticField', className: 'a.B', path: { x: 1 } }] })).body.error.message, /\(staticField\) needs path/);
+    assert.match((await t.submit({ steps: [{ type: 'classes', match: '' }] })).body.error.message, /\(classes\) needs match/);
+    assert.match((await t.submit({ steps: [{ type: 'referrers' }] })).body.error.message, /\(referrers\) needs a handle/);
     assert.equal((await t.submit({ steps: [{ type: 'plugins', plugins: [{ code: '1' }], seconds: 1 }] })).status, 403);
     assert.equal((await t.submit({ config: { plugins: [{ code: '1' }] } })).status, 403);
     assert.equal((await t.submit({ priority: 12 })).status, 400);
