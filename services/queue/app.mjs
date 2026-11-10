@@ -67,7 +67,8 @@ export async function createQueue(settings = queueSettingsFromEnv(), { log = () 
   const emit = (item, type, data = {}) => { const event = { type, at: new Date().toISOString(), state: item.state, ...data }; (item.events ??= []).push(event); if (item.events.length > 500) item.events.splice(0, item.events.length - 500); events.emit(item.id, event); };
   function finish(item, state, extra = {}, persist = true) {
     Object.assign(item, { state, finishedAt: Date.now(), ...extra });
-    if (item.runnerId && item.sessionId) { const runner = runnerById(item.runnerId); runner?.deleteSession(item.sessionId); }
+    // the slot is free once the runner closed the session: ask that runner for its capacity right away and dispatch, instead of waiting for the periodic health check
+    if (item.runnerId && item.sessionId) { const runner = runnerById(item.runnerId); runner?.deleteSession(item.sessionId).finally(() => runner.health().finally(() => setImmediate(dispatch))); }
     item.sessionId = null;
     if (persist) { emit(item, state, extra.error ? { error: extra.error } : {}); save(item); }
     item.abort = null;
