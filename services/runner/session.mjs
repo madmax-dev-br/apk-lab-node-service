@@ -346,24 +346,59 @@ export class Session extends EventEmitter {
   }
 
   // ---- screenshots -------------------------------------------------------------------------------------------------------------------------------------------------------
-  /** With waitReady, first waits for "Tela pronta" (readyTimeoutMs, 408 ready-timeout); the result carries `ready` { waitedMs, screenReady }. */
-  async screenshot({ scale = 1, systemBars = true, waitReady = false, readyTimeoutMs = READY_TIMEOUT_MS } = {}) {
+  /** With waitReady, first waits for "Tela pronta" (readyTimeoutMs, 408 ready-timeout); the result carries `ready` { waitedMs, screenReady }.
+   *  rect: a box of the window in dp (the coordinates of layout-bounds `bounds`): only that piece of the screen; padding (dp, 0-64) widens it. */
+  async screenshot({ scale = 1, systemBars = true, rect = null, padding = 0, waitReady = false, readyTimeoutMs = READY_TIMEOUT_MS } = {}) {
     const ready = waitReady ? await this.waitReady({ timeoutMs: readyTimeoutMs }) : null;
     if (!this.snapshot) throw conflict('no-screen', 'No screen yet: launch the app first');
-    const shot = await this.painter.paint(this.snapshot, { scale, systemBars });
-    return { ...shot, ready: ready ? { waitedMs: ready.waitedMs, screenReady: ready.screenReady } : null };
+    const crop = rect ? this.screenBox(rect, padding) : null;
+    const shot = await this.paintChecked(this.snapshot, { scale, systemBars, crop });
+    return { ...shot, ...(crop ? { rect: { ...rect }, screenBounds: crop } : {}), ready: ready ? { waitedMs: ready.waitedMs, screenReady: ready.screenReady } : null };
   }
-  async elementScreenshot(key, { scale = 1, waitReady = false, readyTimeoutMs = READY_TIMEOUT_MS } = {}) {
+  async elementScreenshot(key, { scale = 1, padding = 0, waitReady = false, readyTimeoutMs = READY_TIMEOUT_MS } = {}) {
     const ready = waitReady ? await this.waitReady({ timeoutMs: readyTimeoutMs }) : null;
     if (!this.snapshot) throw conflict('no-screen', 'No screen yet: launch the app first');
     const element = (await this.layoutBounds({ names: false })).find(item => item.key === key);
     if (!element) throw new HttpError(404, 'element-not-found', `Element ${key} is not on the screen (GET /sessions/${this.id}/layout-bounds lists the current keys)`);
-    const result = await this.painter.paint(this.snapshot, { scale, crop: element.screenBounds });
+    const result = await this.paintChecked(this.snapshot, { scale, crop: this.screenBox(element.bounds, padding) });
     return { ...result, element, ready: ready ? { waitedMs: ready.waitedMs, screenReady: ready.screenReady } : null };
   }
-  async capturePluginImage({ snapshot, element, maxWidth }) {
-    const offset = this.contentOffset(), b = element ? (element.windowBounds ?? element.bounds) : null;
-    const crop = b ? { left: b.left + offset.x, top: b.top + offset.y, right: b.right + offset.x, bottom: b.bottom + offset.y } : null;
+  /**
+   * Pieces of the screen from ONE painting: each piece is { selector } (the first element that matches, or its `index`), { key } (a layout-bounds key) or
+   * { rect } (a window box in dp), with the call's padding (or the piece's own). Every piece answers on its own: { index, kind, element?, bounds, screenBounds,
+   * width, height, png } or { index, kind, error: { code, message } } -- a component not on the screen does not fail the others.
+   */
+  async screenshotPieces({ pieces, padding = 0, scale = 1, waitReady = false, readyTimeoutMs = READY_TIMEOUT_MS } = {}) {
+    const ready = waitReady ? await this.waitReady({ timeoutMs: readyTimeoutMs }) : null;
+    if (!this.snapshot) throw conflict('no-screen', 'No screen yet: launch the app first');
+    const snapshot = this.snapshot, elements = await this.layoutBounds({ names: false }), offset = this.contentOffset();
+    const plan = pieces.map((piece, index) => {
+      const pad = piece.padding ?? padding;
+      try {
+        if (piece.rect) return { index, kind: 'rect', bounds: { ...piece.rect }, screenBounds: this.screenBox(piece.rect, pad) };
+        const element = piece.key !== undefined ? elements.find(item => item.key === piece.key) : this.find(piece.selector, elements)[Number(piece.selector?.index ?? 0)];
+        if (!element) return { index, kind: piece.key !== undefined ? 'key' : 'selector', error: { code: 'element-not-found', message: `No element on the screen matches ${JSON.stringify(piece.key ?? piece.selector)}` } };
+        return { index, kind: piece.key !== undefined ? 'key' : 'selector', element, bounds: element.bounds, screenBounds: this.screenBox(element.bounds, pad, offset) };
+      } catch (error) { return { index, kind: 'selector', error: { code: error.code ?? 'bad-request', message: String(error.message ?? error) } }; }
+    });
+    const painted = await this.painter.paint(snapshot, { scale, crops: plan.map(item => item.error ? null : item.screenBounds) });
+    const notes = Object.entries(painted.notes ?? {}).filter(([, n]) => n).map(([k, n]) => `${k}: ${n}`);
+    return { activity: snapshot.activityName ?? null, notes, ready: ready ? { waitedMs: ready.waitedMs, screenReady: ready.screenReady } : null,
+      pieces: plan.map((item, i) => { if (item.error) return item; const out = painted.pieces[i]; return out.error ? { ...item, error: { code: out.code, message: out.error } } : { ...item, width: out.width, height: out.height, png: out.png }; }) };
+  }
+  /** A window box (dp) as a box of the painted screen: the system bars offset added, `padding` dp around it (0-64), cut to the screen by the painter. */
+  screenBox(bounds, padding = 0, offset = this.contentOffset()) {
+    const pad = Math.max(0, Math.min(64, Number(padding) || 0));
+    return { left: bounds.left + offset.x - pad, top: bounds.top + offset.y - pad, right: bounds.right + offset.x + pad, bottom: bounds.bottom + offset.y + pad };
+  }
+  async paintChecked(snapshot, options) {
+    try { return await this.painter.paint(snapshot, options); }
+    catch (error) { if (error?.code === 'empty-crop') throw new HttpError(422, 'empty-crop', 'The box is outside the screen'); throw error; }
+  }
+  /** lab.screenshot / lab.capture of a server plugin: the whole screen, a component (`element`, with `padding`) or a box of the window (`region`), as the page cuts them. */
+  async capturePluginImage({ snapshot, element, region = null, padding = 0, maxWidth }) {
+    const offset = this.contentOffset(), b = region ?? (element ? (element.windowBounds ?? element.bounds) : null);
+    const crop = b ? this.screenBox(b, padding, offset) : null;
     const width = crop ? crop.right - crop.left : snapshot?.systemBars?.widthDp ?? 411, limit = Math.max(16, Math.min(2048, Number(maxWidth) || 1080));
     const result = await this.painter.paint(snapshot, { crop, scale: Math.min(1, limit / Math.max(1, width)) });
     return { blob: new Blob([result.png], { type: 'image/png' }), width: result.width, height: result.height, type: 'image/png', notes: Object.entries(result.notes).filter(([, n]) => n).map(([k, n]) => `${k}: ${n}`) };

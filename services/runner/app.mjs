@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { Router, HttpError, badRequest, notFound, readBody, readJSON, parseMultipart, sendBytes, openSSE, tokenMatches, presentedToken, createHttpServer, parseOrigins, env, envInt, envBool } from '../../lib/http.mjs';
 import { loadBundle } from './bundle.mjs';
 import { createScreenPainter } from './screen.mjs';
+import { rectFrom, paddingFrom, piecesFrom, pieceOut } from './pieces.mjs';
 import { rasterBytes, rasterStats } from './rasters.mjs';
 import { validateConfig, withDefaults, sessionDefaults } from './config.mjs';
 import { hostDeviceMemory, memoryReport, workerHeapMb } from './memory.mjs';
@@ -49,6 +50,8 @@ const selectorFrom = body => {
   for (const [key, value] of Object.entries(source)) if (typeof value === 'string' && value.length > 2000) throw badRequest(`selector.${key} too long`);
   return source;
 };
+/** waitReady / readyTimeoutMs of a JSON body, with the same rules as the screenshot query. */
+const readyFlagArgs = body => readyQueryFrom(new URLSearchParams({ ...(readyFlagFrom(body?.waitReady, 'waitReady') ? { waitReady: '1' } : {}), ...(body?.readyTimeoutMs !== undefined ? { readyTimeoutMs: String(body.readyTimeoutMs) } : {}) }));
 const selectorFromQuery = url => { const out = {}; for (const key of ['key', 'testTag', 'text', 'textContains', 'contentDescription', 'androidId', 'viewId', 'kind']) { const value = url.searchParams.get(key); if (value !== null) out[key] = value; } return Object.keys(out).length ? out : null; };
 const intentFrom = body => {
   const allowed = ['action', 'data', 'category', 'extras', 'type', 'component'];
@@ -188,11 +191,18 @@ export async function createRunner(settings = runnerSettingsFromEnv(), { log = d
   router.add('GET', '/sessions/:id/screen-state', async ({ params }) => (await getSession(params.id).screenState()) ?? { text: null });
   router.add('GET', '/sessions/:id/diagnostic', async ({ params }) => getSession(params.id).diagnostic());
   router.add('GET', '/sessions/:id/screenshot.png', async ({ params, url, res }) => {
-    const shot = await getSession(params.id).screenshot({ scale: num(url.searchParams.get('scale'), 1, 0.1, 4), systemBars: bool(url.searchParams.get('systemBars'), true), ...readyQueryFrom(url.searchParams) });
-    sendBytes(res, 200, 'image/png', shot.png, shotHeaders(shot));
+    const q = url.searchParams, rect = rectFrom(q.get('rect'));   // ?rect=left,top,right,bottom (window dp): only that piece of the screen
+    const shot = await getSession(params.id).screenshot({ scale: num(q.get('scale'), 1, 0.1, 4), systemBars: bool(q.get('systemBars'), true), rect, padding: paddingFrom(q.get('padding')), ...readyQueryFrom(q) });
+    sendBytes(res, 200, 'image/png', shot.png, { ...shotHeaders(shot), ...(shot.screenBounds ? { 'x-screen-bounds': JSON.stringify(shot.screenBounds) } : {}) });
+  });
+  // Several pieces of the screen from one painting: components by selector or key, and boxes of the window; each piece answers on its own (PNG in base64)
+  router.add('POST', '/sessions/:id/screenshot-pieces', async ({ params, req }) => {
+    const body = await json(req), pieces = piecesFrom(body?.pieces);
+    const out = await getSession(params.id).screenshotPieces({ pieces, padding: paddingFrom(body.padding), scale: num(body.scale, 1, 0.1, 4), ...readyFlagArgs(body) });
+    return { ...out, pieces: out.pieces.map(pieceOut) };
   });
   router.add('GET', '/sessions/:id/elements/:key/screenshot.png', async ({ params, url, res }) => {
-    const shot = await getSession(params.id).elementScreenshot(params.key, { scale: num(url.searchParams.get('scale'), 1, 0.1, 4), ...readyQueryFrom(url.searchParams) });
+    const shot = await getSession(params.id).elementScreenshot(params.key, { scale: num(url.searchParams.get('scale'), 1, 0.1, 4), padding: paddingFrom(url.searchParams.get('padding')), ...readyQueryFrom(url.searchParams) });
     sendBytes(res, 200, 'image/png', shot.png, shotHeaders(shot));
   });
 

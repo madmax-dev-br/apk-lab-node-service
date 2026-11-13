@@ -33,8 +33,10 @@ export function createScreenPainter({ runtimeDir, rasterBytes }) {
 
   /**
    * Paints `snapshot` -> { png: Buffer, width, height, notes }. crop: { left, top, right, bottom } in screen dp (after the system bars offset) or null.
+   * crops: several such boxes cut from ONE painting -> { pieces: [{ png, width, height } | { error, code }], width, height, notes } (a box outside the screen is an error of
+   * its own piece, not of the call).
    */
-  async function paint(snapshot, { scale = 1, crop = null, systemBars = true } = {}) {
+  async function paint(snapshot, { scale = 1, crop = null, crops = null, systemBars = true } = {}) {
     const { CK, faces } = await get();
     const bars = snapshot?.systemBars ?? null;
     const screenW = Math.round(bars?.widthDp ?? Math.max(1, ...(snapshot?.views ?? []).map(v => v.bounds?.right ?? 0)));
@@ -168,6 +170,14 @@ export function createScreenPainter({ runtimeDir, rasterBytes }) {
           const t = bars.nav.thickness, rect = bars.nav.side === 'right' ? CK.LTRBRect(screenW - t, 0, screenW, screenH) : bars.nav.side === 'left' ? CK.LTRBRect(0, 0, t, screenH) : CK.LTRBRect(0, screenH - t, screenW, screenH);
           canvas.drawRect(rect, paintOf(argbColor(bars.nav.color)));
         }
+      }
+      const box = c => { const l = Math.max(0, Math.floor(c.left * k)), t = Math.max(0, Math.floor(c.top * k)), r = Math.min(W, Math.ceil(c.right * k)), bt = Math.min(H, Math.ceil(c.bottom * k)); return r > l && bt > t ? [l, t, r, bt] : null; };
+      if (Array.isArray(crops)) {
+        const pieces = crops.map(c => {
+          const rect = c ? box(c) : null; if (!rect) return { error: 'The box is outside the screen', code: 'empty-crop' };
+          const piece = surface.makeImageSnapshot(rect); try { const bytes = piece.encodeToBytes(CK.ImageFormat.PNG, 100); if (!bytes) return { error: 'PNG encoding failed', code: 'encode-failed' }; return { png: Buffer.from(bytes), width: rect[2] - rect[0], height: rect[3] - rect[1] }; } finally { piece.delete(); }
+        });
+        return { pieces, width: W, height: H, notes };
       }
       let image = surface.makeImageSnapshot(), width = W, height = H;
       if (crop) {

@@ -1,5 +1,6 @@
 // Declarative job steps: validation (before a job is accepted) and execution against a runner session.
 import { HttpError, badRequest } from '../../lib/http.mjs';
+import { rectFrom, paddingFrom, piecesFrom } from '../runner/pieces.mjs';
 
 export const MAX_STEPS = 200;
 export const RELOAD_MODES = ['recreate', 'reopen'];
@@ -16,7 +17,8 @@ const STEP_FIELDS = {
   scroll: ['selector', 'x', 'y', 'dx', 'dy'],
   back: [],
   sleep: ['ms'],
-  screenshot: ['name', 'scale', 'selector', 'key', 'systemBars', 'waitReady'],
+  screenshot: ['name', 'scale', 'selector', 'key', 'systemBars', 'waitReady', 'rect', 'padding'],
+  screenshotPieces: ['name', 'pieces', 'padding', 'scale', 'waitReady'],
   layoutBounds: ['names', 'name'],
   snapshot: [],
   elements: ['selector'],
@@ -75,6 +77,8 @@ export function validateSteps(steps, { pluginsAllowed = true } = {}) {
       if (!Array.isArray(step.plugins) || !step.plugins.length) throw badRequest(`${where} (plugins) needs a plugins list`);
       if (!(Number.isFinite(step.seconds) && step.seconds >= 0 && step.seconds <= 300)) throw badRequest(`${where} (plugins) needs seconds between 0 and 300`);
     }
+    if (step.type === 'screenshot') { if (step.rect !== undefined && (step.selector || step.key)) throw badRequest(`${where} (screenshot): rect or selector/key, not both`); rectFrom(step.rect, `${where}.rect`); paddingFrom(step.padding, `${where}.padding`); }
+    if (step.type === 'screenshotPieces') { piecesFrom(step.pieces); paddingFrom(step.padding, `${where}.padding`); }
     if (step.type === 'config' && (!step.config || typeof step.config !== 'object')) throw badRequest(`${where} (config) needs a config object`);
     if (step.type === 'intent' && (!step.intent || typeof step.intent !== 'object')) throw badRequest(`${where} (intent) needs an intent object`);
   });
@@ -106,15 +110,21 @@ export async function runStep(step, { runner, sessionId, signal, index }) {
       // waitReady: the runner waits for "Tela pronta" before painting (and, for a selector, before the element is looked up)
       const readyTimeoutMs = step.timeoutMs ?? READY_TIMEOUT_MS, ready = step.waitReady === true ? `&waitReady=1&readyTimeoutMs=${readyTimeoutMs}` : '';
       if (ready && step.selector && !step.key) await call('POST', '/wait', { ready: true, timeoutMs: readyTimeoutMs });
-      let path = `/screenshot.png?scale=${encodeURIComponent(step.scale ?? 1)}&systemBars=${step.systemBars === false ? 0 : 1}${ready}`;
+      const pad = step.padding !== undefined ? `&padding=${encodeURIComponent(step.padding)}` : '', rect = step.rect ? rectFrom(step.rect) : null;
+      let path = `/screenshot.png?scale=${encodeURIComponent(step.scale ?? 1)}&systemBars=${step.systemBars === false ? 0 : 1}${ready}${pad}${rect ? `&rect=${[rect.left, rect.top, rect.right, rect.bottom].join(',')}` : ''}`;
       if (step.key || step.selector) {
         const key = step.key ?? (await call('GET', `/elements?${new URLSearchParams(Object.entries(step.selector).map(([k, v]) => [k, String(v)]))}`)).elements?.[step.selector.index ?? 0]?.key;
         if (!key) throw new HttpError(404, 'element-not-found', `screenshot: no element matches ${JSON.stringify(step.selector)}`);
-        path = `/elements/${encodeURIComponent(key)}/screenshot.png?scale=${encodeURIComponent(step.scale ?? 1)}${ready}`;
+        path = `/elements/${encodeURIComponent(key)}/screenshot.png?scale=${encodeURIComponent(step.scale ?? 1)}${ready}${pad}`;
       }
       const shot = await runner.sessionBytes(sessionId, path, { signal, timeoutMs: Math.max(60000, readyTimeoutMs + 15000) });
       const name = `${label}.png`;
       return { output: { artifact: name, bytes: shot.bytes.length, notes: shot.notes ? JSON.parse(shot.notes) : null, ...(shot.ready ? { ready: JSON.parse(shot.ready) } : {}) }, artifacts: [{ name, type: 'image/png', bytes: shot.bytes }] };
+    }
+    case 'screenshotPieces': {   // pieces of one painting: each one an artifact <step>.piece-<i>.png; a piece not on the screen is reported, not a failure of the step
+      const r = await call('POST', '/screenshot-pieces', { pieces: step.pieces, ...pick(step, ['padding', 'scale', 'waitReady']) }), artifacts = [];
+      const pieces = r.pieces.map(piece => { const { pngBase64, ...rest } = piece; if (!pngBase64) return rest; const name = `${label}.piece-${piece.index}.png`; artifacts.push({ name, type: 'image/png', bytes: Buffer.from(pngBase64, 'base64') }); return { ...rest, artifact: name }; });
+      return { output: { activity: r.activity, pieces, notes: r.notes }, artifacts };
     }
     case 'layoutBounds': { const r = await call('GET', `/layout-bounds?names=${step.names === false ? 0 : 1}`); return { output: { activity: r.activity, count: r.elements.length }, artifacts: [{ name: `${label}.layout-bounds.json`, type: 'application/json', bytes: Buffer.from(JSON.stringify(r, null, 2)) }] }; }
     case 'snapshot': { const r = await call('GET', '/snapshot'); return { output: { activity: r?.activity ?? null }, artifacts: [{ name: `${label}.snapshot.json`, type: 'application/json', bytes: Buffer.from(JSON.stringify(r, null, 2)) }] }; }
