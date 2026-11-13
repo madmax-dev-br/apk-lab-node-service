@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { deviceMemoryFor, memoryReport, workerHeapMb } from '../../services/runner/memory.mjs';
-import { sessionDefaults, withDefaults, validateConfig, missingApisMode, RASTER_SCALE_STEPS, deviceForVM } from '../../services/runner/config.mjs';
+import { sessionDefaults, withDefaults, validateConfig, missingApisMode, RASTER_SCALE_STEPS, RASTER_SETTLED_STEPS, RESTART_KEYS, deviceForVM } from '../../services/runner/config.mjs';
 import { privateAddressKind, assertPublicHost, createGuardedFetch, PRIVATE_NETWORK_CODE } from '../../services/runner/net-guard.mjs';
 import { runnerSettingsFromEnv, appDataDirFromEnv, allowedHostsFromEnv } from '../../services/runner/app.mjs';
 import { Session } from '../../services/runner/session.mjs';
@@ -106,8 +106,12 @@ test('raster settings: rasterScale steps and rasterNavigation validated; applied
   session.client = { worker: {}, setRasterSettings: async settings => { sent.push(settings); return { scale: settings.scale, enabled: true, navigation: settings.navigation }; } }; session.state = 'running';
   session.config = withDefaults({ raster: 'progressive' }, { allowedHosts: ['*'] });
   const result = await session.updateConfig({ rasterScale: 0.25 });
-  assert.deepEqual(sent, [{ scale: 0.25, navigation: true }]); assert.deepEqual(result.applied, [{ key: 'raster', raster: { scale: 0.25, enabled: true, navigation: true } }]); assert.deepEqual(result.restartRequired, []);
-  await session.updateConfig({ rasterNavigation: false }); assert.deepEqual(sent[1], { scale: 0.25, navigation: false }, 'the other setting is kept');
+  assert.deepEqual(sent, [{ scale: 0.25, navigation: true, settled: 1 }]); assert.deepEqual(result.applied, [{ key: 'raster', raster: { scale: 0.25, enabled: true, navigation: true } }]); assert.deepEqual(result.restartRequired, []);
+  await session.updateConfig({ rasterNavigation: false }); assert.deepEqual(sent[1], { scale: 0.25, navigation: false, settled: 1 }, 'the other setting is kept');
+  await session.updateConfig({ rasterSettled: 0.9 }); assert.deepEqual(sent[2], { scale: 0.25, navigation: false, settled: 0.9 }, '"Resolução com a tela parada" applies live');
+  for (const bad of [{ rasterSettled: 0.5 }, { rasterSettled: '1' }]) assert.throws(() => v(bad), { status: 400 }, JSON.stringify(bad));
+  assert.equal(v({ rasterSettled: 0.8 }).rasterSettled, 0.8);
+  if (runtime.ok) assert.deepEqual((await import(path.join(runtime.dir, 'runtime/motion-raster.js'))).SETTLED_SCALE_STEPS, RASTER_SETTLED_STEPS, 'same settled steps as the bundle');
   assert.deepEqual((await session.updateConfig({ raster: 'full' })).restartRequired, ['raster']);
   assert.deepEqual(session.memoryFor(), { budgetMiB: 1024, maxHeapObjects: 671088, source: 'navigator.deviceMemory=8', deviceMemory: 8 });
 });
@@ -115,4 +119,23 @@ test('raster settings: rasterScale steps and rasterNavigation validated; applied
 test('the bundle\'s own memoryBudget matches the rule the tests assume', { skip: runtimeSkip }, async () => {
   const { memoryBudget } = await import(path.join(runtime.dir, 'runtime/memory-budget.js'));
   for (const deviceMemory of [0.25, 0.5, 1, 2, 4, 8, null]) assert.deepEqual(memoryBudget({ deviceMemory }).maxHeapObjects, labBudget({ deviceMemory }).maxHeapObjects, String(deviceMemory));
+});
+
+test('engine and coreMemory: the default is the site\'s (the WebAssembly core, 512 / 512 / 1000); both are validated and take effect at the next load', () => {
+  const defaults = sessionDefaults({ allowedHosts: ['*'] });
+  assert.equal(defaults.engine, 'wasm'); assert.deepEqual(defaults.coreMemory, { heapMiB: 512, metaMiB: 512, threads: 1000 }); assert.equal(defaults.rasterSettled, 1);
+  assert.deepEqual(withDefaults({ coreMemory: { heapMiB: 256 } }, { allowedHosts: ['*'] }).coreMemory, { heapMiB: 256, metaMiB: 512, threads: 1000 });
+  const LIMITS = { heapMiB: [64, 1536], metaMiB: [64, 1024], threads: [16, 1000] };
+  const checkCoreMemory = raw => { const total = raw.heapMiB + raw.metaMiB + raw.threads + 32; return { value: { ...raw }, totalMiB: total, error: total > 2048 ? `${total} MiB` : null }; };   // the shape of the bundle's rule
+  const modules = { checkCoreMemory, CORE_MEMORY_LIMITS: LIMITS, CORE_MEMORY_DEFAULT: { heapMiB: 512, metaMiB: 512, threads: 1000 } }, policy = { allowedHosts: ['*'], maxMemoryMiB: 1024 };
+  const check = input => validateConfig(input, { modules, policy }, { partial: true });
+  assert.equal(check({ engine: 'js' }).engine, 'js'); assert.equal(check({ engine: 'wasm' }).engine, 'wasm');
+  assert.throws(() => check({ engine: 'graal' }), /config\.engine/);
+  assert.deepEqual(check({ coreMemory: { heapMiB: 256, metaMiB: 200, threads: 130 } }).coreMemory, { heapMiB: 256, metaMiB: 200, threads: 130 });
+  assert.throws(() => check({ coreMemory: { heapMiB: 10 } }), /coreMemory\.heapMiB: an integer from 64 to 1536/);
+  assert.throws(() => check({ coreMemory: { threads: 12.5 } }), /coreMemory\.threads/);
+  assert.throws(() => check({ coreMemory: { heap: 256 } }), /unknown keys heap/);
+  assert.throws(() => check({ coreMemory: { heapMiB: 1024, metaMiB: 1024 } }), /at most 2048 MiB/);
+  assert.throws(() => check({ coreMemory: { heapMiB: 1536, metaMiB: 64, threads: 16 } }), error => error.status === 403 || /runner's limit/.test(error.message));
+  assert.ok(RESTART_KEYS.includes('engine') && RESTART_KEYS.includes('coreMemory'), 'the engine and its memory apply at the next load');
 });

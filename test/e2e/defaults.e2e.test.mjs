@@ -29,7 +29,14 @@ test('default session: the site\'s memory budget, defaults in the config, Tela p
       assert.equal(memory.maxHeapObjects, expectedObjects); if (expectedObjects === 671088) { assert.equal(memory.budgetMiB, 1024); assert.equal(memory.workerHeapMb, 3072); }
       assert.equal(created.body.config.missingApis, 'primitives'); assert.deepEqual(created.body.config.network.allowedHosts, ['*']); assert.equal(created.body.config.raster, 'full'); assert.deepEqual(created.body.config.appData, { keep: true, clear: false });
       const ready = await r.api('POST', `/sessions/${id}/wait`, { json: { ready: true, timeoutMs: 30000 } }); assert.equal(ready.status, 200, JSON.stringify(ready.body)); assert.equal(ready.body.ready, true);
-      assert.equal((await r.api('GET', `/sessions/${id}/snapshot`)).body.vmHealth.limit, expectedObjects, 'the VM got the limit the session reports');
+      // The default engine is the site's: the WebAssembly core with its default memory; its health is the core's (no object limit), not the JavaScript VM's
+      assert.equal(created.body.config.engine, 'wasm'); assert.deepEqual(created.body.config.coreMemory, { heapMiB: 512, metaMiB: 512, threads: 1000 }); assert.equal(memory.engine, 'wasm');
+      const health0 = (await r.api('GET', `/sessions/${id}/snapshot`)).body.vmHealth;
+      assert.equal(health0.engine, 'wasm', JSON.stringify(health0)); assert.equal(health0.limit, null); assert.equal(health0.core.threadCapacity, 1000, 'the core got the thread capacity the session reports'); assert.ok(health0.core.metaBytes > 0);
+      // engine "js": the JavaScript VM, whose object limit is the budget the session reports
+      const onJs = await r.create(await apk(COMPOSE), { launch: true, engine: 'js' }); assert.equal(onJs.status, 201, JSON.stringify(onJs.body));
+      try { assert.equal(onJs.body.session.memory.engine, 'js'); const jsHealth = (await r.api('GET', `/sessions/${onJs.body.session.id}/snapshot`)).body.vmHealth; assert.equal(jsHealth.engine, 'js'); assert.equal(jsHealth.limit, expectedObjects, 'the VM got the limit the session reports'); }
+      finally { await r.api('DELETE', `/sessions/${onJs.body.session.id}`); }
       const reloaded = await r.api('POST', `/sessions/${id}/reload`, { json: { mode: 'recreate' } }); assert.equal(reloaded.status, 200, JSON.stringify(reloaded.body)); assert.match(reloaded.body.snapshot.activity, /MainActivity$/);
       assert.equal((await r.api('POST', `/sessions/${id}/wait`, { json: { ready: true, timeoutMs: 30000 } })).body.ready, true);
       const reopened = await r.api('POST', `/sessions/${id}/reload`, { json: { mode: 'reopen' } }); assert.equal(reopened.status, 200, JSON.stringify(reopened.body));
@@ -44,7 +51,7 @@ test('default session: the site\'s memory budget, defaults in the config, Tela p
       const shot = await r.api('GET', `/sessions/${pid}/screenshot.png?waitReady=1`); assert.equal(shot.status, 200);
       assert.deepEqual(helpers.pngSize(shot.body), { width: 411, height: 914 }); assert.equal(JSON.parse(shot.headers.get('x-screen-ready')).ready, true);
       const live = await r.api('PATCH', `/sessions/${pid}/config`, { json: { rasterScale: 0.75, rasterNavigation: false } }); assert.equal(live.status, 200, JSON.stringify(live.body));
-      assert.deepEqual(live.body.applied.find(item => item.key === 'raster').raster, { scale: 0.75, enabled: true, navigation: false });
+      assert.deepEqual(live.body.applied.find(item => item.key === 'raster').raster, { scale: 0.75, enabled: true, navigation: false, settled: 1 });
       await r.api('POST', `/sessions/${pid}/tap`, { json: { selector: { testTag: 'filter-Todos' } } });
       assert.equal((await r.api('GET', `/sessions/${pid}/snapshot?full=1`)).body.vmHealth.motionRaster.scale, 0.75);
       assert.equal((await r.api('PATCH', `/sessions/${pid}/config`, { json: { rasterScale: 0.3 } })).status, 400);

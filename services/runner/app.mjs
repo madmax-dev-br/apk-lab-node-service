@@ -268,7 +268,8 @@ export function summary(session) {
   const views = session.bundle.flattenViews(s).filter(v => v.bounds).map(v => ({ id: v.id, parentId: v.parentId, depth: v.depth, type: v.type, kind: v.kind, text: v.text, contentDescription: v.contentDescription, androidId: v.androidId, visible: v.visible, clickable: v.clickable, compose: v.compose, bounds: v.bounds, window: v.window }));
   return { seq: session.snapshotSeq, activity: s.activityName ?? null, closed: !!s.closed, canGoBack: !!s.canGoBack, navigation: s.navigation ?? null, systemBars: s.systemBars ?? null, contentOffset: offset,
     views, composeSemantics: s.composeSemantics ?? null, deepLink: s.deepLink ?? null, droppedEvent: s.droppedEvent ?? null, droppedComposeAction: s.droppedComposeAction ?? null,
-    pendingEventDelay: s.pendingEventDelay ?? null, screenReady: screenReadyOut(s), vmHealth: s.vmHealth ? { liveObjects: s.vmHealth.liveObjects, limit: s.vmHealth.limit, collections: s.vmHealth.collections, oomCount: s.vmHealth.oomCount, lastEventMs: s.vmHealth.lastEventMs } : null,
+    pendingEventDelay: s.pendingEventDelay ?? null, screenReady: screenReadyOut(s), vmHealth: s.vmHealth ? { engine: s.vmHealth.engine ?? 'js', liveObjects: s.vmHealth.liveObjects, limit: s.vmHealth.core ? null : s.vmHealth.limit, collections: s.vmHealth.collections, oomCount: s.vmHealth.oomCount, lastEventMs: s.vmHealth.lastEventMs,
+      ...(s.vmHealth.core ? { core: s.vmHealth.core } : {}) } : null,   // engine 'wasm': no object limit; `core` = the WebAssembly core's memory (metaspace, threads, heap)
     debugging: { methodOverrides: s.methodOverrides ?? [], endpointMocks: s.endpointMocks ?? [], hostMap: s.hostMap ?? [], ignoredActivities: s.ignoredActivities ?? [] } };
 }
 

@@ -13,13 +13,13 @@ const repo = option('--repo') ?? 'madmax-dev-br/apk-browser-lab-site', commit = 
 if (!site || !/^[0-9a-f]{40}$/.test(commit ?? '')) { console.error('usage: make-runtime-lock.mjs <site checkout> --commit <40-hex sha> [--repo owner/name]'); process.exit(2); }
 const root = path.resolve(site);
 // Whole directories the Worker loads assets from (and their licenses), plus the page modules this service imports and their imports.
-const DIRECTORIES = ['runtime', 'framework-aosp', 'framework-resources', 'vendor', 'fonts', 'licenses'];
+const DIRECTORIES = ['runtime', 'vmcore', 'framework-aosp', 'framework-resources', 'vendor', 'fonts', 'licenses'];   // vmcore/: the WebAssembly core (core.wasm and its JavaScript host), the engine sessions use by default
 const FILES = ['build-info.json', 'THIRD_PARTY.md'];
 const { BUNDLE_ENTRY_POINTS } = await import(new URL('../services/runner/bundle.mjs', import.meta.url));
 const files = new Set(FILES);
 async function walk(dir) { for (const entry of await readdir(path.join(root, dir), { withFileTypes: true })) { const rel = `${dir}/${entry.name}`; if (entry.isDirectory()) await walk(rel); else if (entry.isFile()) files.add(rel); } }
 for (const dir of DIRECTORIES) await walk(dir);
-const queue = BUNDLE_ENTRY_POINTS.filter(file => !file.startsWith('runtime/')), visited = new Set();
+const queue = BUNDLE_ENTRY_POINTS.filter(file => !file.startsWith('runtime/') && !file.startsWith('vmcore/')), visited = new Set();   // runtime/ and vmcore/ are locked whole
 while (queue.length) {
   const file = queue.shift(); if (visited.has(file)) continue; visited.add(file); files.add(file);
   const text = await readFile(path.join(root, file), 'utf8');

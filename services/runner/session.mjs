@@ -125,7 +125,7 @@ export class Session extends EventEmitter {
   async loadNow() {
     // memory "automatic" (memoryMiB 0) follows navigator.deviceMemory like the site (memory.mjs); the Worker's JS heap is sized for that budget
     const config = this.config, memory = this.memoryFor(config) ?? { budgetMiB: config.memoryMiB || 400 }, heapMb = workerHeapMb(memory.budgetMiB, this.limits);
-    this.memory = { ...memory, workerHeapMb: heapMb };
+    this.memory = { ...memory, workerHeapMb: heapMb, engine: config.engine === 'js' ? 'js' : 'wasm', ...(config.engine === 'js' ? {} : { coreMemory: config.coreMemory ?? null }) };   // with the core, the Java heap is coreMemory.heapMiB of a WebAssembly memory outside the Worker's JS heap; budgetMiB is the JavaScript VM's
     this.client?.cancel(); this.client?.rasters?.reset(); this.plugins?.dispose(); this.plugins = null;
     this.state = 'loading'; this.snapshot = null; this.lastReady = null; this.logs = []; this.lastLogSeq = -1; this.netlog.clear(); this.permissionRequests.clear(); this.lastError = null; this.runtimeErrors = []; this.logStreaming = false;
     const client = this.client = this.createClient(heapMb);
@@ -134,9 +134,10 @@ export class Session extends EventEmitter {
     const result = await client.load(bytes, {
       device: deviceForVM(config, this.bundle), tolerateMissing: missingApisMode(config.missingApis), strictCrash: config.strictCrash === true,
       keepData: this.appDataDir ? config.appData?.keep !== false : false, clearData: config.appData?.clear === true, webview: false, memoryMiB: config.memoryMiB ?? 0,
+      engine: config.engine === 'js' ? 'js' : 'wasm', coreMemory: config.coreMemory ?? null,   // the Worker's own default is 'js': the engine is always named
       methodOverrides: config.methodOverrides ?? [], ignoredActivities: config.ignoredActivities ?? [], endpointMocks: config.endpointMocks ?? [], eventSeconds: config.eventSeconds ?? 0,
       permissions: config.permissions?.config || config.permissions?.location ? { config: config.permissions.config ?? { states: {}, denials: {}, once: [] }, location: config.permissions.location } : null,
-      motionRaster: config.raster === 'progressive', rasterScale: config.rasterScale ?? 0.5, rasterNavigation: config.rasterNavigation !== false, logcatStreaming: false });
+      motionRaster: config.raster === 'progressive', rasterScale: config.rasterScale ?? 0.5, rasterNavigation: config.rasterNavigation !== false, rasterSettled: config.rasterSettled ?? 1, logcatStreaming: false });
     this.metrics.loadMs = Math.round(performance.now() - started);
     this.inventory = result.inventory; this.appData = result.appData; this.state = 'ready';
     if (config.permissions?.dialogs && config.permissions.dialogs !== 'dismiss') await client.setPermissions({ dialogs: true });
@@ -170,7 +171,7 @@ export class Session extends EventEmitter {
       if (partial.device || partial.network) { const { outcome, snapshot } = await this.op('device', () => client.setDevice(deviceForVM(next, this.bundle))); if (snapshot) this.setSnapshot(snapshot); applied.push({ key: 'device', outcome }); }
       if (partial.eventSeconds !== undefined) applied.push({ key: 'eventSeconds', limits: await client.setTimeLimits(partial.eventSeconds) });
       // "Resolução no movimento" / "Tela nova em baixa resolução": the next snapshot uses them; with raster "full" the Worker keeps the reduced replay off (enabled: false)
-      if (partial.rasterScale !== undefined || partial.rasterNavigation !== undefined) applied.push({ key: 'raster', raster: await client.setRasterSettings({ scale: next.rasterScale ?? 0.5, navigation: next.rasterNavigation !== false }) });
+      if (partial.rasterScale !== undefined || partial.rasterNavigation !== undefined || partial.rasterSettled !== undefined) applied.push({ key: 'raster', raster: await client.setRasterSettings({ scale: next.rasterScale ?? 0.5, navigation: next.rasterNavigation !== false, settled: next.rasterSettled ?? 1 }) });
       if (partial.methodOverrides) applied.push({ key: 'methodOverrides', statuses: await client.setMethodOverrides(partial.methodOverrides) });
       if (partial.endpointMocks) applied.push({ key: 'endpointMocks', statuses: await client.setEndpointMocks(partial.endpointMocks) });
       if (partial.ignoredActivities) applied.push({ key: 'ignoredActivities', statuses: await client.setIgnoredActivities(partial.ignoredActivities) });
