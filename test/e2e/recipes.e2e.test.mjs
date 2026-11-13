@@ -153,3 +153,22 @@ test('receita 17: esperar a tela ficar pronta e tirar o print (sessão com mock 
   assert.deepEqual(done.result.artifacts.map(a => a.name), ['pronta.png', 'reaberta.png']);
   assert.ok(helpers.pngSize(await queueClient.artifact(done, 'pronta.png')));
 });
+
+test('receita 19: um componente específico por plugin enviado pela API, e pedaços da tela (retângulo e vários componentes de uma pintura)', { skip, timeout: 60000 }, async () => {
+  const session = await runner.createSession(await apk(COMPOSE), { launch: true });
+  try {
+    await session.waitReady();
+    await session.setPlugins([{ id: 'componente', name: 'Um componente', code: `
+      const [busca] = await lab.find({ testTag: 'search' });
+      lab.ui.kv({ key: busca.key, largura: Math.round(busca.size.width), altura: Math.round(busca.size.height) }, { id: 'dados' });
+      lab.ui.image(await lab.capture({ testTag: 'search' }, { padding: 8 }), { id: 'componente' });` }]);
+    let output; for (let i = 0; i < 80; i++) { output = await session.plugin('componente'); if (output.blocks.some(block => block.kind === 'image') || output.status === 'erro') break; await new Promise(resolve => setTimeout(resolve, 100)); }
+    assert.notEqual(output.status, 'erro', JSON.stringify(output.errors));
+    const dados = Object.fromEntries(output.blocks.find(block => block.id === 'dados').entries);
+    const imagem = await session.pluginImage(output.blocks.find(block => block.kind === 'image').path);
+    assert.deepEqual(helpers.pngSize(imagem), { width: Number(dados.largura) + 16, height: Number(dados.altura) + 16 });
+    assert.deepEqual(helpers.pngSize(await session.screenshot({ rect: { left: 0, top: 0, right: 200, bottom: 100 } })), { width: 200, height: 100 });
+    const { pieces } = await session.screenshotPieces([{ selector: { testTag: 'search' } }, { selector: { testTag: 'new-order' } }, { rect: { left: 16, top: 16, right: 116, bottom: 66 } }], { padding: 4 });
+    assert.equal(pieces[0].element.key, dados.key); assert.ok(pieces.every(piece => piece.png && helpers.pngSize(piece.png).width === piece.width), JSON.stringify(pieces.map(p => p.error)));
+  } finally { await session.close(); }
+});

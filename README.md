@@ -29,7 +29,7 @@ Cada sessão roda o `runtime/apk-worker.js` do bundle público **sem modificaç�
 
 ## De onde vem o runtime
 
-Este repositório não contém o código do lab. `npm run fetch-runtime` baixa o build público de um **commit fixo** do repositório [`madmax-dev-br/apk-browser-lab-site`](https://github.com/madmax-dev-br/apk-browser-lab-site) (hoje a revisão `5eb77725df72`, commit `6c5fe6b2`) e confere o **SHA-256 de cada arquivo** contra `runtime.lock.json` antes de instalar em `vendor/apk-lab/` (ignorado pelo git). São ~111 MiB: `runtime/`, `framework-aosp/`, `framework-resources/`, `vendor/`, `fonts/`, `licenses/`, `THIRD_PARTY.md` e os módulos de página que os serviços importam. O site não publica APKs: os serviços rodam os APKs que você envia.
+Este repositório não contém o código do lab. `npm run fetch-runtime` baixa o build público de um **commit fixo** do repositório [`madmax-dev-br/apk-browser-lab-site`](https://github.com/madmax-dev-br/apk-browser-lab-site) (hoje a revisão `ddd036d06d3d`, commit `0101a0aa`) e confere o **SHA-256 de cada arquivo** contra `runtime.lock.json` antes de instalar em `vendor/apk-lab/` (ignorado pelo git). São ~113 MiB: `runtime/`, `vmcore/` (o núcleo WebAssembly, o motor padrão das sessões), `framework-aosp/`, `framework-resources/`, `vendor/`, `fonts/`, `licenses/`, `THIRD_PARTY.md` e os módulos de página que os serviços importam. O site não publica APKs: os serviços rodam os APKs que você envia.
 
 ```sh
 npm run fetch-runtime                      # baixa e confere
@@ -108,7 +108,8 @@ Referência completa com exemplos de requisição e resposta: **[documentação]
 | `POST /sessions/:id/reload` | `{ "mode": "recreate" }` (padrão: `Activity.recreate()`, estado salvo e ViewModels retidos mantidos) ou `{ "mode": "reopen" }` (instância nova com o mesmo Intent, conteúdo carrega de novo) |
 | `GET /sessions/:id/ready` | "Tela pronta": o `screenReady` do último snapshot (`ready`, `waitingFor`, `fragments`) e se ele é atual (`current`) |
 | `GET /sessions/:id/snapshot\|layout-bounds\|elements\|compose-tree\|screen-state\|diagnostic` | leitura da tela e Resumo |
-| `GET /sessions/:id/screenshot.png`, `GET /sessions/:id/elements/:key/screenshot.png` | PNG da tela / de um elemento; `?waitReady=1&readyTimeoutMs=15000` espera a tela pronta antes (408 com os motivos) |
+| `GET /sessions/:id/screenshot.png`, `GET /sessions/:id/elements/:key/screenshot.png` | PNG da tela / de um elemento; `?rect=l,t,r,b` só uma caixa da janela (dp), `&padding=0..64`; `?waitReady=1&readyTimeoutMs=15000` espera a tela pronta antes (408 com os motivos) |
+| `POST /sessions/:id/screenshot-pieces` | pedaços da tela de uma pintura só: `{ pieces: [{ selector } \| { key } \| { rect }], padding }`, até 16, cada um com elemento, caixa e PNG em base64 (ou o seu `error`) |
 | `GET /sessions/:id/activity\|view-models\|fragments\|methods`, `POST /sessions/:id/inspect\|field` | inspeção da VM |
 | `GET /sessions/:id/classes?match=`, `POST /sessions/:id/statics\|static-field\|instances\|referrers` | estado fora da tela: campos estáticos de classes já inicializadas, classes pelo nome, objetos vivos de um tipo e quem os segura (varredura do heap em páginas curtas) |
 | `GET /sessions/:id/logcat\|network` (+ `/stream`), `GET /sessions/:id/events` | logs paginados e SSE; `/events` tem o evento `ready` a cada virada da tela pronta |
@@ -123,7 +124,7 @@ Referência completa com exemplos de requisição e resposta: **[documentação]
 | `POST /jobs`, `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/events`, `GET /jobs/:id/artifacts/:name`, `DELETE /jobs/:id` | jobs com passos |
 | `POST /leases`, `GET /leases/:id`, `POST /leases/:id/extend`, `DELETE /leases/:id`, `* /leases/:id/session/<caminho>` | sessão interativa via proxy |
 
-Passos de um job: `launch`, `intent`, `wait` (`selector` e/ou `ready: true`), `waitReady`, `reload` (`mode`), `tap`, `type`, `scroll`, `back`, `sleep`, `screenshot` (`waitReady: true` espera a tela pronta), `layoutBounds`, `snapshot`, `elements`, `viewModels`, `viewModelField`, `inspect`, `field`, `composeTree`, `config`, `logcat`, `network`, `plugins`, `diagnostic`, `screenState`.
+Passos de um job: `launch`, `intent`, `wait` (`selector` e/ou `ready: true`), `waitReady`, `reload` (`mode`), `tap`, `type`, `scroll`, `back`, `sleep`, `screenshot` (`waitReady: true` espera a tela pronta; `rect`/`padding` cortam um pedaço), `screenshotPieces` (um artefato por pedaço), `layoutBounds`, `snapshot`, `elements`, `viewModels`, `viewModelField`, `inspect`, `field`, `composeTree`, `config`, `logcat`, `network`, `plugins`, `diagnostic`, `screenState`.
 
 ### Padrões iguais ao site
 
@@ -133,6 +134,8 @@ Uma sessão criada sem config se comporta como o site para um visitante novo (`d
 |---|---|---|---|
 | Dispositivo | phone, retrato, fonte 1, `en-US`, tema claro, 24 h, fuso do host, animações 1×, bateria 80 % sem carregar, online, navegação por gestos | igual (`sanitizeSettings` do bundle) | |
 | Rede | `allowedHosts ["*"]`, sem relay, sem redirecionamentos | igual | o runner recusa alvos privados (abaixo) |
+| Motor da VM | núcleo WebAssembly (`vmcore/core.wasm`: heap Java, frames e interpretador) | igual: `engine: "wasm"`, `coreMemory: { heapMiB: 512, metaMiB: 512, threads: 1000 }` | `engine: "js"` volta à VM JavaScript (com o orçamento abaixo) |
+| Resolução com a tela parada | 100 % | `rasterSettled: 1` (ou 0.9, 0.8) | ao vivo; um print é sempre em densidade total |
 | Memória da VM | automática: `navigator.deviceMemory` | igual: o Worker define `navigator.deviceMemory` como o Chrome nesta máquina | 8 GiB ou mais → 1024 MiB = 671.088 objetos |
 | APIs ausentes | `primitives` | `primitives` | antes era `strict` |
 | Encerrar no crash | não | não (`strictCrash: false`) | |
@@ -165,7 +168,7 @@ Todo snapshot do Worker traz `screenReady = { ready, activity, readySince, settl
 - [`examples/apk-lab-client.mjs`](examples/apk-lab-client.mjs) — cliente Node sem dependências (runner, fila, leases, SSE);
 - [`examples/run-job.mjs`](examples/run-job.mjs) — envia um job e salva os artefatos;
 - [`examples/curl.sh`](examples/curl.sh) — um passeio pela API com curl;
-- as 17 [receitas da documentação](https://madmax-dev-br.github.io/apk-lab-node-service/#receitas) (mock de endpoint, erro com atraso, redirecionamento, allow list/offline, permissões, retornos de método, Activities ignoradas, dispositivo ao vivo, deep link, job, lease, SSE, plugin, captura de elemento, CORS, recarregar a tela — recriar ou reabrir —, esperar a tela ficar pronta e tirar o print).
+- as 19 [receitas da documentação](https://madmax-dev-br.github.io/apk-lab-node-service/#receitas) (mock de endpoint, erro com atraso, redirecionamento, allow list/offline, permissões, retornos de método, Activities ignoradas, dispositivo ao vivo, deep link, job, lease, SSE, plugin, captura de elemento, CORS, recarregar a tela — recriar ou reabrir —, esperar a tela ficar pronta e tirar o print, estado num campo estático, um componente específico por plugin e pedaços da tela).
 
 ```js
 import { readFile, writeFile } from 'node:fs/promises';

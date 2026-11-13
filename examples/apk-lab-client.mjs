@@ -69,9 +69,20 @@ export class Session {
   layoutBounds({ names = true } = {}) { return this.call('GET', `/layout-bounds?names=${names ? 1 : 0}`); }
   elements(selector = {}) { return this.call('GET', `/elements?${new URLSearchParams(Object.entries(selector).map(([k, v]) => [k, String(v)]))}`); }
   composeTree(maxNodes = 2000) { return this.call('GET', `/compose-tree?maxNodes=${maxNodes}`); }
-  /** waitReady: true waits for "Tela pronta" first (readyTimeoutMs, 15 s by default). */
-  screenshot({ scale = 1, systemBars = true, waitReady = false, readyTimeoutMs = 15000 } = {}) { return this.http.bytes(`${this.base}/screenshot.png?scale=${scale}&systemBars=${systemBars ? 1 : 0}${waitReady ? `&waitReady=1&readyTimeoutMs=${readyTimeoutMs}` : ''}`); }
-  elementScreenshot(key, { scale = 1, waitReady = false, readyTimeoutMs = 15000 } = {}) { return this.http.bytes(`${this.base}/elements/${encodeURIComponent(key)}/screenshot.png?scale=${scale}${waitReady ? `&waitReady=1&readyTimeoutMs=${readyTimeoutMs}` : ''}`); }
+  /** waitReady: true waits for "Tela pronta" first (readyTimeoutMs, 15 s by default). rect: only that box of the window, in dp ({ left, top, right, bottom }); padding: dp around it. */
+  screenshot({ scale = 1, systemBars = true, waitReady = false, readyTimeoutMs = 15000, rect = null, padding = 0 } = {}) {
+    const box = rect ? `&rect=${[rect.left, rect.top, rect.right, rect.bottom].join(',')}` : '';
+    return this.http.bytes(`${this.base}/screenshot.png?scale=${scale}&systemBars=${systemBars ? 1 : 0}${box}${padding ? `&padding=${padding}` : ''}${waitReady ? `&waitReady=1&readyTimeoutMs=${readyTimeoutMs}` : ''}`);
+  }
+  elementScreenshot(key, { scale = 1, padding = 0, waitReady = false, readyTimeoutMs = 15000 } = {}) { return this.http.bytes(`${this.base}/elements/${encodeURIComponent(key)}/screenshot.png?scale=${scale}${padding ? `&padding=${padding}` : ''}${waitReady ? `&waitReady=1&readyTimeoutMs=${readyTimeoutMs}` : ''}`); }
+  /**
+   * Several pieces of the screen from one painting: pieces = [{ selector } | { key } | { rect }] (up to 16, each with an optional own padding). Each piece comes back
+   * with its element, bounds, screenBounds, width, height and `png` (a Buffer), or with `error` when it is not on the screen.
+   */
+  async screenshotPieces(pieces, { padding = 0, scale = 1, waitReady = false, readyTimeoutMs = 15000 } = {}) {
+    const out = await this.call('POST', '/screenshot-pieces', { pieces, padding, scale, waitReady, readyTimeoutMs });
+    return { ...out, pieces: out.pieces.map(({ pngBase64, ...piece }) => (pngBase64 ? { ...piece, png: Buffer.from(pngBase64, 'base64') } : piece)) };
+  }
   config() { return this.call('GET', '/config'); }
   updateConfig(partial) { return this.call('PATCH', '/config', partial); }
   restart(config) { return this.call('POST', '/restart', config ? { config } : {}); }
