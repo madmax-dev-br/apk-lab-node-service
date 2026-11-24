@@ -4,7 +4,7 @@ import { Worker } from 'node:worker_threads';
 
 const PLUGIN_WORKER_URL = new URL('./plugin-worker.mjs', import.meta.url);
 
-export function createServerPluginHost({ bundle, vm, limits, captureImage, getPackage, onLogStreaming, onChange, log = () => {} }) {
+export function createServerPluginHost({ bundle, vm, limits, captureImage, getPackage, onLogStreaming, onChange, actions = null, log = () => {} }) {
   const watchdogs = new Set();
   function createWorker(name) {
     const thread = new Worker(PLUGIN_WORKER_URL, { workerData: { source: bundle.pluginWorkerSource() }, env: {}, argv: [], execArgv: [], stdout: true, stderr: true,
@@ -31,7 +31,7 @@ export function createServerPluginHost({ bundle, vm, limits, captureImage, getPa
     watchdogs.add(stop);
     return { worker: adapter, release: null };
   }
-  const host = bundle.createPluginHost({ vm, createWorker, getPackage, onLogStreaming, onChange, captureImage });
+  const host = bundle.createPluginHost({ vm, createWorker, getPackage, onLogStreaming, onChange, captureImage, ...(actions ? { actions } : {}) });   // actions: plugin-actions.mjs
   const imageStore = new Map();   // `${pluginId}:${blockIndex}` -> { bytes, type } of the last listing
   async function describe(plugin, { inlineImages = false } = {}) {
     const blocks = [];

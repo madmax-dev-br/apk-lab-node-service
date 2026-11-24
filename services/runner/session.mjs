@@ -8,6 +8,7 @@ import { HttpError, badRequest } from '../../lib/http.mjs';
 import { rasterHooks, isRasterKey } from './rasters.mjs';
 import { deviceForVM, missingApisMode, RESTART_KEYS, validatePlugins } from './config.mjs';
 import { createServerPluginHost } from './plugins.mjs';
+import { createPluginActions } from './plugin-actions.mjs';
 import { screenReadyOut, READY_TIMEOUT_MS, RELOAD_MODES } from './readiness.mjs';
 import { hostDeviceMemory, memoryReport, workerHeapMb } from './memory.mjs';
 
@@ -142,6 +143,7 @@ export class Session extends EventEmitter {
     this.inventory = result.inventory; this.appData = result.appData; this.state = 'ready';
     if (config.permissions?.dialogs && config.permissions.dialogs !== 'dismiss') await client.setPermissions({ dialogs: true });
     this.plugins = createServerPluginHost({ bundle: this.bundle, vm: client, limits: this.limits.plugins, log: this.log,
+      actions: createPluginActions({ session: this, client, host: () => this.plugins.host }),
       captureImage: options => this.capturePluginImage(options), getPackage: () => this.inventory?.packageName ?? null,
       onLogStreaming: wanted => { this.pluginLogs = wanted; this.syncLogcat(); }, onChange: id => this.emit('event', 'plugin', { id }) });
     this.plugins.host.vmChanged();

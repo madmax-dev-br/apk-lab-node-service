@@ -260,6 +260,10 @@
    "sha256": "f1d31cc9e3c0d09d42d30d4bbcc7c4e8bafb635e7a89f13e36afd27040b84b1d",
    "bytes": 11978
   },
+  "lab-scroll.js": {
+   "sha256": "33af7d22f9b70eaa1a666543a00e88abf14d1cf617fc5bd0f62dcaaf167d139f",
+   "bytes": 18531
+  },
   "lab-target.js": {
    "sha256": "323f2152ff43a5492f13f4d7cffd138adf11b0b20839fd878daf4b1176f98dd7",
    "bytes": 9505
