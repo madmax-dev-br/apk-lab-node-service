@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runtimeSkip, EMPTY_ZIP } from '../helpers/env.mjs';
+import { DEVICE_KEYS } from '../../services/runner/config.mjs';
 
 test('runner API: auth, health, CORS, validation and policies', { skip: runtimeSkip, timeout: 60000 }, async () => {
   const { startRunner } = await import('../helpers/runner.mjs');
@@ -13,6 +14,8 @@ test('runner API: auth, health, CORS, validation and policies', { skip: runtimeS
     assert.equal((await r.api('GET', '/sessions', { token: null })).status, 401);
     assert.equal((await r.api('GET', '/sessions', { token: 'nope' })).status, 401);
     assert.deepEqual((await r.api('GET', '/sessions')).body, []);
+    const defaults = (await r.api('GET', '/defaults')).body;   // the device is what config.device takes: every key of it, none of the page's other controls
+    assert.deepEqual(Object.keys(defaults.device ?? {}).sort(), [...DEVICE_KEYS].sort(), JSON.stringify(defaults.device)); assert.equal(defaults.device.screen, 'phone');
     const preflight = await r.api('OPTIONS', '/sessions', { token: null, headers: { origin: 'https://painel.exemplo.com', 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization, content-type, x-apk-config' } });
     assert.equal(preflight.status, 204); assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://painel.exemplo.com');
     assert.equal((await r.api('OPTIONS', '/sessions', { token: null, headers: { origin: 'https://outro.exemplo.com', 'access-control-request-method': 'POST' } })).status, 403);

@@ -7,7 +7,7 @@ import { loadBundle } from './bundle.mjs';
 import { createScreenPainter } from './screen.mjs';
 import { rectFrom, paddingFrom, piecesFrom, pieceOut } from './pieces.mjs';
 import { rasterBytes, rasterStats } from './rasters.mjs';
-import { validateConfig, withDefaults, sessionDefaults } from './config.mjs';
+import { validateConfig, withDefaults, sessionDefaults, DEVICE_KEYS } from './config.mjs';
 import { hostDeviceMemory, memoryReport, workerHeapMb } from './memory.mjs';
 import { REPO_ROOT } from '../../lib/runtime-dir.mjs';
 import { Session, publicSnapshot, inventorySummary } from './session.mjs';
@@ -108,7 +108,7 @@ export async function createRunner(settings = runnerSettingsFromEnv(), { log = d
   const defaultMemory = () => { const memory = memoryReport(bundle.memoryBudget, { memoryMiB: 0, deviceMemory: hostDeviceMemory() }); return { ...memory, workerHeapMb: workerHeapMb(memory.budgetMiB, limits) }; };
   router.add('GET', '/health', () => ({ ok: true, service: 'apk-lab-runner', version: VERSION, runtimeRevision: bundle.info.revision, pluginsAllowed: settings.pluginsAllowed, ...capacity(),
     memory: defaultMemory(), network: { allowedHosts: settings.allowedHosts, allowPrivateNetwork: policy.allowPrivateNetwork }, appData: !!settings.appDataDir }), { public: true });
-  router.add('GET', '/defaults', () => ({ config: sessionDefaults(policy), device: bundle.defaultDeviceSettings ? Object.fromEntries(Object.entries(bundle.defaultDeviceSettings()).filter(([key]) => !['network', 'memoryMiB', 'eventSeconds', 'location', 'raster', 'layoutBounds'].includes(key))) : null, memory: defaultMemory(), webview: false }));
+  router.add('GET', '/defaults', () => ({ config: sessionDefaults(policy), device: bundle.defaultDeviceSettings ? Object.fromEntries(Object.entries(bundle.defaultDeviceSettings()).filter(([key]) => DEVICE_KEYS.includes(key))) : null, memory: defaultMemory(), webview: false }));
   router.add('GET', '/', () => ({ service: 'apk-lab-runner', version: VERSION, docs: 'https://github.com/madmax-dev-br/apk-lab-node-service#readme' }), { public: true });
   router.add('GET', '/plugin-templates', () => [...bundle.PLUGIN_TEMPLATES, ...SERVICE_PLUGIN_TEMPLATES].map(t => ({ id: t.id, name: t.name, description: t.description, code: t.code })));
   router.add('GET', '/stats', () => ({ ...capacity(), rasters: rasterStats(), sessions: [...sessions.values()].map(s => s.describe()), memory: process.memoryUsage() }));

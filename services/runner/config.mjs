@@ -3,7 +3,7 @@
 import { badRequest, HttpError } from '../../lib/http.mjs';
 
 export const CONFIG_KEYS = ['device', 'network', 'permissions', 'methodOverrides', 'ignoredActivities', 'endpointMocks', 'eventSeconds', 'missingApis', 'strictCrash', 'memoryMiB', 'engine', 'coreMemory', 'appData', 'raster', 'rasterScale', 'rasterNavigation', 'rasterSettled', 'logcat', 'plugins', 'launch'];
-const DEVICE_KEYS = ['screen', 'orientation', 'connectivity', 'navigation', 'fontScale', 'animatorScale', 'statusBarHeightDp', 'darkTheme', 'hour24', 'locale', 'timeZone', 'battery'];
+export const DEVICE_KEYS = ['screen', 'orientation', 'connectivity', 'navigation', 'fontScale', 'animatorScale', 'statusBarHeightDp', 'darkTheme', 'hour24', 'locale', 'timeZone', 'battery'];
 const NETWORK_KEYS = ['allowedHosts', 'hostMap', 'offline', 'proxyUrl'];
 const PERMISSION_KEYS = ['states', 'location', 'dialogs'];
 export const RESTART_KEYS = ['missingApis', 'strictCrash', 'memoryMiB', 'engine', 'coreMemory', 'appData', 'raster'];   // take effect at the next load (POST /sessions/:id/restart); rasterScale / rasterNavigation / rasterSettled apply live

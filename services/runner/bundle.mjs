@@ -28,6 +28,7 @@ export async function loadBundle(dir) {
     sanitizePermissionConfig: permissions.sanitizeConfig, sanitizeLocation: permissions.sanitizeLocation, answerDialog: permissions.answerDialog,
     EVENT_SECONDS_STEPS: timeLimits.EVENT_SECONDS_STEPS, isMemoryStep: memory.isMemoryStep, MEMORY_STEPS_MIB: memory.MEMORY_STEPS_MIB, memoryBudget: memory.memoryBudget,
     MOTION_SCALE_STEPS: motion.MOTION_SCALE_STEPS ?? [1, 0.75, 0.5, 0.35, 0.25], SETTLED_SCALE_STEPS: motion.SETTLED_SCALE_STEPS ?? [1],
-    CORE_MEMORY_DEFAULT: core.CORE_MEMORY_DEFAULT, CORE_MEMORY_LIMITS: core.CORE_MEMORY_LIMITS, checkCoreMemory: core.checkCoreMemory,   // the WebAssembly core's memory (heap, metaspace, live threads) defaultDeviceSettings: settings.defaultDeviceSettings,
+    CORE_MEMORY_DEFAULT: core.CORE_MEMORY_DEFAULT, CORE_MEMORY_LIMITS: core.CORE_MEMORY_LIMITS, checkCoreMemory: core.checkCoreMemory,   // the WebAssembly core's memory (heap, metaspace, live threads)
+    defaultDeviceSettings: settings.defaultDeviceSettings,
   };
 }
